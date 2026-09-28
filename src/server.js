@@ -4,7 +4,7 @@ import http from "node:http";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { BrowserManager, installedChromeVersion } from "./browser-manager.js";
+import { BrowserManager, installedChrome } from "./browser-manager.js";
 import {
   CAPTURES_DIR,
   ConfigStore,
@@ -39,6 +39,21 @@ function sendJson(res, body, status = 200) {
   res.end(payload);
 }
 
+function streamLive(res, manager) {
+  res.writeHead(200, {
+    "Content-Type": "multipart/x-mixed-replace; boundary=frame",
+    "Cache-Control": "no-store",
+  });
+  const remove = manager.addLiveViewer((jpeg) => {
+    // 受け取りが追いつかないときは、古いフレームを積まずに捨てる
+    if (res.writableNeedDrain) return;
+    res.write(`--frame\r\nContent-Type: image/jpeg\r\nContent-Length: ${jpeg.length}\r\n\r\n`);
+    res.write(jpeg);
+    res.write("\r\n");
+  });
+  res.on("close", remove);
+}
+
 function readBody(req) {
   return new Promise((resolve, reject) => {
     const chunks = [];
@@ -67,13 +82,82 @@ function readBody(req) {
   });
 }
 
-function safeFile(root, pathname) {
+export function isEmbedded(file) {
+  return /(?:\$bunfs|~bun)(?:[/\\]|$)/i.test(String(file));
+}
+
+function pathApi(root) {
+  return /^[A-Za-z]:[\\/]/.test(root) || root.includes("\\") ? path.win32 : path.posix;
+}
+
+export function safeFile(root, pathname) {
   const decoded = decodeURIComponent(pathname);
-  const relative = decoded === "/" ? "index.html" : decoded.replace(/^\/+/, "");
+  const relative = decoded === "/" ? "index.html" : decoded.replace(/^[/\\]+/, "");
+  if (isEmbedded(root)) {
+    const api = pathApi(root);
+    const base = api.normalize(root);
+    const file = api.normalize(api.join(base, relative));
+    const prefix = base.endsWith(api.sep) ? base : `${base}${api.sep}`;
+    if (file !== base && !file.startsWith(prefix)) return null;
+    return file;
+  }
   const file = path.resolve(root, relative);
   const prefix = root.endsWith(path.sep) ? root : `${root}${path.sep}`;
   if (file !== root && !file.startsWith(prefix)) return null;
   return file;
+}
+
+async function readEmbedded(file) {
+  if (typeof Bun !== "undefined" && typeof Bun.file === "function") {
+    const blob = Bun.file(file);
+    if (await blob.exists()) return Buffer.from(await blob.arrayBuffer());
+  }
+  return fsp.readFile(file);
+}
+
+async function serveEmbedded(req, res, file) {
+  let data;
+  try {
+    data = await readEmbedded(file);
+  } catch {
+    sendJson(res, { error: "見つかりません" }, 404);
+    return;
+  }
+  const type = TYPES[path.extname(file).toLowerCase()] || "application/octet-stream";
+  const range = req.headers.range;
+  if (range && data.length > 0) {
+    const match = /^bytes=(\d*)-(\d*)$/.exec(range);
+    if (!match || (match[1] === "" && match[2] === "")) {
+      res.writeHead(416, { "Content-Range": `bytes */${data.length}` });
+      res.end();
+      return;
+    }
+    let start = match[1] === "" ? Math.max(0, data.length - Number(match[2])) : Number(match[1]);
+    let end = match[2] === "" || match[1] === "" ? data.length - 1 : Number(match[2]);
+    if (Number.isNaN(start) || Number.isNaN(end) || start > end || start >= data.length) {
+      res.writeHead(416, { "Content-Range": `bytes */${data.length}` });
+      res.end();
+      return;
+    }
+    end = Math.min(end, data.length - 1);
+    const slice = data.subarray(start, end + 1);
+    res.writeHead(206, {
+      "Content-Type": type,
+      "Content-Length": slice.length,
+      "Content-Range": `bytes ${start}-${end}/${data.length}`,
+      "Accept-Ranges": "bytes",
+      "Cache-Control": "no-cache",
+    });
+    res.end(slice);
+    return;
+  }
+  res.writeHead(200, {
+    "Content-Type": type,
+    "Content-Length": data.length,
+    "Accept-Ranges": "bytes",
+    "Cache-Control": "no-cache",
+  });
+  res.end(data);
 }
 
 function serveFile(req, res, file) {
@@ -106,7 +190,10 @@ function serveFile(req, res, file) {
         "Accept-Ranges": "bytes",
         "Cache-Control": "no-cache",
       });
-      fs.createReadStream(file, { start, end }).pipe(res);
+      fs.createReadStream(file, { start, end }).on("error", () => {
+        if (!res.headersSent) sendJson(res, { error: "見つかりません" }, 404);
+        else res.destroy();
+      }).pipe(res);
       return;
     }
     res.writeHead(200, {
@@ -115,7 +202,10 @@ function serveFile(req, res, file) {
       "Accept-Ranges": "bytes",
       "Cache-Control": "no-cache",
     });
-    fs.createReadStream(file).pipe(res);
+    fs.createReadStream(file).on("error", () => {
+      if (!res.headersSent) sendJson(res, { error: "見つかりません" }, 404);
+      else res.destroy();
+    }).pipe(res);
   });
 }
 
@@ -151,13 +241,16 @@ export function createApp({ manager, store, publicDir = PUBLIC_DIR }) {
     try {
       const url = new URL(req.url || "/", `http://${HOST}`);
       if (req.method === "GET" && url.pathname === "/api/status") {
-        const [status, chrome] = await Promise.all([manager.status(), installedChromeVersion()]);
-        sendJson(res, { ...status, chrome });
+        sendJson(res, { ...(await manager.status()), chrome: installedChrome() });
+        return;
+      }
+      if (req.method === "GET" && url.pathname === "/api/live") {
+        streamLive(res, manager);
         return;
       }
       if (req.method === "GET" && url.pathname === "/api/config") {
         const config = await store.load();
-        const chrome = await installedChromeVersion();
+        const chrome = installedChrome();
         sendJson(res, { config, profiles: allProfiles(config), chrome });
         return;
       }
@@ -180,21 +273,6 @@ export function createApp({ manager, store, publicDir = PUBLIC_DIR }) {
         sendJson(res, { ...(await manager.status()), url: target });
         return;
       }
-      if (req.method === "POST" && url.pathname === "/api/back") {
-        await manager.back();
-        sendJson(res, await manager.status());
-        return;
-      }
-      if (req.method === "POST" && url.pathname === "/api/forward") {
-        await manager.forward();
-        sendJson(res, await manager.status());
-        return;
-      }
-      if (req.method === "POST" && url.pathname === "/api/reload") {
-        await manager.reload();
-        sendJson(res, await manager.status());
-        return;
-      }
       if (req.method === "POST" && url.pathname === "/api/capture") {
         const shot = await manager.capture();
         sendJson(res, shot);
@@ -203,11 +281,6 @@ export function createApp({ manager, store, publicDir = PUBLIC_DIR }) {
       if (req.method === "POST" && url.pathname === "/api/browser/close") {
         await manager.close();
         sendJson(res, await manager.status());
-        return;
-      }
-      if (req.method === "POST" && url.pathname === "/api/browser/install-chromium") {
-        const result = await manager.installChromium();
-        sendJson(res, result);
         return;
       }
       if (req.method === "GET" && url.pathname === "/api/captures") {
@@ -233,6 +306,10 @@ export function createApp({ manager, store, publicDir = PUBLIC_DIR }) {
         const file = safeFile(publicDir, url.pathname);
         if (!file) {
           sendJson(res, { error: "見つかりません" }, 404);
+          return;
+        }
+        if (isEmbedded(file)) {
+          await serveEmbedded(req, res, file);
           return;
         }
         serveFile(req, res, file);

@@ -12,7 +12,6 @@ export const BASE_ARGS = [
   "--no-default-browser-check",
   "--force-device-scale-factor=1",
   "--autoplay-policy=no-user-gesture-required",
-  "--disable-blink-features=AutomationControlled",
   "--disable-session-crashed-bubble",
   "--hide-crash-restore-bubble",
 ];
@@ -101,9 +100,11 @@ function cleanArgs(args) {
 export function sanitizeConfig(input) {
   const base = defaultConfig();
   const source = input && typeof input === "object" ? input : {};
-  const engine = ["auto", "chrome", "chromium", "custom"].includes(source.engine)
-    ? source.engine
-    : "auto";
+  const engine = source.engine === "chromium"
+    ? "auto"
+    : ["auto", "chrome", "custom"].includes(source.engine)
+      ? source.engine
+      : "auto";
 
   const customProfiles = [];
   const seen = new Set(BUILTIN_PROFILES.map((profile) => profile.id));

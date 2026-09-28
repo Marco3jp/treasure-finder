@@ -28,84 +28,105 @@
       <input id="url" name="url" type="text" inputmode="url" spellcheck="false" placeholder="https:// 動画のあるページ" autocomplete="off">
       <button type="submit">開く</button>
     </form>
-    <div class="action-row">
-      <div class="cluster">
-        <button type="button" id="back">戻る</button>
-        <button type="button" id="forward">進む</button>
-        <button type="button" id="reload">再読込</button>
-        <button type="button" id="sample">サンプル</button>
-      </div>
-      <button type="button" id="capture" class="capture">この video を撮る</button>
-    </div>
     <p id="domain-line" class="domain-line">ドメインごとの起動方法は、そのドメインを開いたときに切り替わります。</p>
     <p id="banner" class="banner" hidden></p>
   </section>
 
   <main>
-    <section class="sheet">
-      <h2>レンダラ</h2>
-      <p class="lead">撮影は OS 付属の WebView ではなく、Windows / macOS / Linux で同じ Chromium 系に固定しています。Google Chrome があればそれを使い、更新は Chrome 自身の自動更新に任せます。</p>
-      <form id="engine-form" class="stack">
-        <label class="choice"><input type="radio" name="engine" value="auto"> 自動（Chrome があれば Chrome）</label>
-        <label class="choice"><input type="radio" name="engine" value="chrome"> Google Chrome</label>
-        <label class="choice"><input type="radio" name="engine" value="chromium"> Playwright Chromium</label>
-        <label class="choice"><input type="radio" name="engine" value="custom"> 実行ファイルを指定</label>
-        <label class="field">
-          <span>実行ファイル</span>
-          <input id="executable-path" type="text" spellcheck="false" placeholder="/path/to/chrome">
-        </label>
-        <div class="cluster">
-          <button type="submit">レンダラ設定を保存</button>
-          <button type="button" id="install-chromium">Chromiumを取得</button>
+    <div class="shots">
+      <section class="sheet live-sheet">
+        <div class="sheet-head">
+          <h2>プレビュー</h2>
+          <p id="live-meta" class="dim"></p>
         </div>
-        <p id="chrome-line" class="dim"></p>
-      </form>
+        <div id="live-stage" class="stage live-stage">
+          <p id="live-empty">ブラウザを開くと、撮影用 Chrome の画面がここに映ります。</p>
+          <img id="live" alt="撮影用 Chrome の画面" hidden>
+        </div>
+        <p id="live-note" class="live-note" hidden></p>
+        <div class="stage-actions">
+          <button type="button" id="capture" class="capture">この video を撮る</button>
+        </div>
+      </section>
 
-      <h2>ドメイン別の起動</h2>
-      <p class="lead">動画が真っ黒に写るサイトだけ、ハードウェアアクセラレーションを切った起動にします。Cookie とログイン状態は、起動方法を替えても同じプロファイルに残ります。</p>
-      <form id="rule-form" class="rule-row">
-        <label class="sr" for="rule-host">ドメイン</label>
-        <input id="rule-host" type="text" spellcheck="false" placeholder="example.com">
-        <label class="sr" for="rule-profile">起動方法</label>
-        <select id="rule-profile"></select>
-        <button type="submit">追加</button>
-      </form>
-      <ul id="rules" class="rules"></ul>
-      <label class="field">
-        <span>未指定のドメイン</span>
-        <select id="default-profile"></select>
-      </label>
+      <section class="sheet preview-sheet">
+        <div class="sheet-head">
+          <h2>最新のカット</h2>
+          <p id="shot-meta" class="dim"></p>
+        </div>
+        <div id="stage" class="stage">
+          <p id="stage-empty">まだありません。動画を開いて、赤いボタンを押してください。</p>
+          <img id="preview" alt="" hidden>
+        </div>
+        <div class="stage-actions">
+          <button type="button" id="open-captures">保存フォルダを開く</button>
+        </div>
+        <ul id="filmstrip" class="filmstrip"></ul>
+      </section>
+    </div>
 
-      <details class="advanced">
-        <summary>起動方法を追加する</summary>
-        <form id="profile-form" class="stack">
-          <label class="field"><span>ID</span><input id="profile-id" type="text" spellcheck="false" placeholder="no-overlay"></label>
-          <label class="field"><span>表示名</span><input id="profile-label" type="text" placeholder="オーバーレイ回避"></label>
-          <label class="field"><span>起動引数（1行に1つ）</span><textarea id="profile-args" rows="4" spellcheck="false" placeholder="--disable-gpu"></textarea></label>
-          <button type="submit">プロファイルを追加</button>
-        </form>
-      </details>
-      <ul id="profile-catalog" class="catalog"></ul>
+    <section class="settings">
+      <h2 class="settings-title">詳細設定</h2>
+      <div class="settings-grid">
+        <section class="sheet">
+          <h2>ドメイン別の起動</h2>
+          <p class="lead">動画が真っ黒に写るサイトだけ、ハードウェアアクセラレーションを切った起動にします。Cookie とログイン状態は、起動方法を替えても同じユーザーデータに残ります。</p>
+          <form id="rule-form" class="rule-row">
+            <label class="sr" for="rule-host">ドメイン</label>
+            <input id="rule-host" type="text" spellcheck="false" placeholder="example.com">
+            <label class="sr" for="rule-profile">起動方法</label>
+            <select id="rule-profile"></select>
+            <button type="submit">追加</button>
+          </form>
+          <ul id="rules" class="rules"></ul>
+          <label class="field">
+            <span>未指定のドメイン</span>
+            <select id="default-profile"></select>
+          </label>
 
-      <h2>ファイル名</h2>
-      <p class="lead">いま保存される名前は、このPCのローカル時刻です。ドメインごとに別の抜き出し方を足せるように、<code>filenameRules</code> だけ差し込める形にしてあります。</p>
-      <pre id="filename-preview"></pre>
-      <p class="dim">設定ファイルは data/config.json です。撮った JPEG は data/captures に入ります。</p>
-      <button type="button" id="open-captures">保存フォルダを開く</button>
-    </section>
+          <details class="advanced">
+            <summary>起動方法ごとの起動引数</summary>
+            <ul id="profile-catalog" class="catalog"></ul>
+            <h3>起動方法を追加する</h3>
+            <form id="profile-form" class="stack">
+              <label class="field"><span>ID</span><input id="profile-id" type="text" spellcheck="false" placeholder="no-overlay"></label>
+              <label class="field"><span>表示名</span><input id="profile-label" type="text" placeholder="オーバーレイ回避"></label>
+              <label class="field"><span>起動引数（1行に1つ）</span><textarea id="profile-args" rows="4" spellcheck="false" placeholder="--disable-gpu"></textarea></label>
+              <button type="submit">プロファイルを追加</button>
+            </form>
+          </details>
+        </section>
 
-    <section class="sheet preview-sheet">
-      <div class="sheet-head">
-        <h2>最新のカット</h2>
-        <p id="shot-meta" class="dim"></p>
+        <section class="sheet">
+          <h2>ファイル名</h2>
+          <p class="lead">いま保存される名前は、このPCのローカル時刻です。ドメインごとに別の抜き出し方を足せるように、<code>filenameRules</code> だけ差し込める形にしてあります。</p>
+          <pre id="filename-preview"></pre>
+          <p class="dim">設定ファイルは data/config.json です。撮った JPEG は data/captures に入ります。</p>
+        </section>
+
+        <section class="sheet">
+          <h2>レンダラ</h2>
+          <p class="lead">撮影用の Chrome は、普段開いているウィンドウとは別のプロセスで起動します。ログイン状態はこのアプリ専用のユーザーデータに残り、普段の Chrome とは混ざりません。ハードウェアアクセラレーションはプロセスの起動引数で決まるので、ドメインごとに切り替えるときは、このアプリの Chrome だけを同じユーザーデータで開き直します。</p>
+          <form id="engine-form" class="stack">
+            <label class="choice"><input type="radio" name="engine" value="auto"> 自動（入っている Google Chrome）</label>
+            <label class="choice"><input type="radio" name="engine" value="chrome"> Google Chrome</label>
+            <label class="choice"><input type="radio" name="engine" value="custom"> 実行ファイルを指定</label>
+            <label class="field">
+              <span>実行ファイル</span>
+              <input id="executable-path" type="text" spellcheck="false" placeholder="chrome の実行ファイル">
+            </label>
+            <div class="cluster">
+              <button type="submit">レンダラ設定を保存</button>
+            </div>
+            <p id="chrome-line" class="dim"></p>
+          </form>
+        </section>
       </div>
-      <div id="stage" class="stage">
-        <p id="stage-empty">まだありません。動画を開いて、赤いボタンを押してください。</p>
-        <img id="preview" alt="" hidden>
-      </div>
-      <ul id="filmstrip" class="filmstrip"></ul>
     </section>
   </main>
+  <footer class="foot">
+    <button type="button" id="sample">サンプルを開く</button>
+  </footer>
   <script src="/app.js" type="module"></script>
 </body>
 </html>

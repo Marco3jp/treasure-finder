@@ -1,11 +1,11 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { spawn } from "node:child_process";
-import { captureVideoFrame } from "./capture.js";
-import { CAPTURES_DIR, ROOT_DIR, USER_DATA_ROOT } from "./config-store.js";
+import { captureVideoFrame, findBestVideo } from "./capture.js";
+import { launchChrome } from "./chrome-app.js";
+import { CAPTURES_DIR, USER_DATA_ROOT } from "./config-store.js";
 import { resolveProfileId } from "./domain.js";
 import { AppError } from "./errors.js";
-import { explainLaunchError, findSystemChrome, readChromeVersion, resolveEngine } from "./engines.js";
+import { explainLaunchError, findSystemChrome, resolveEngine } from "./engines.js";
 import { buildFilename } from "./filename.js";
 import { jpegSize } from "./jpeg.js";
 import {
@@ -28,9 +28,33 @@ function createLock() {
   };
 }
 
-async function loadPlaywright() {
-  const playwright = await import("playwright");
-  return playwright.chromium;
+const LIVE_GRAB = { width: 640, height: 360, quality: 0.7 };
+const LIVE_VIDEO_MS = 100;
+const LIVE_PAGE_MS = 250;
+const LIVE_LOCATE_MS = 1500;
+const LIVE_LOAD_RETRIES = 12;
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// ページ側で実行される。読み込み中は loading を返し、再生位置が変わって
+// いなければ画像を作らない。映像を読み出せないときは null になる。
+function grabVideoFrame(video, options) {
+  if (video.readyState < 2 || !video.videoWidth) return { loading: true };
+  if (video.mediaKeys) return null;
+  if (options.after !== null && video.currentTime === options.after) return { time: video.currentTime };
+  const scale = Math.min(1, options.width / video.videoWidth, options.height / video.videoHeight);
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.max(1, Math.round(video.videoWidth * scale));
+  canvas.height = Math.max(1, Math.round(video.videoHeight * scale));
+  canvas.getContext("2d").drawImage(video, 0, 0, canvas.width, canvas.height);
+  try {
+    const url = canvas.toDataURL("image/jpeg", options.quality);
+    return { time: video.currentTime, data: url.slice(url.indexOf(",") + 1) };
+  } catch {
+    return null;
+  }
 }
 
 export class BrowserManager {
@@ -38,7 +62,21 @@ export class BrowserManager {
     this.store = store;
     this.userDataRoot = options.userDataRoot || USER_DATA_ROOT;
     this.capturesDir = options.capturesDir || CAPTURES_DIR;
-    this.exclusive = createLock();
+    const lock = createLock();
+    // 操作が終わるたびに、ライブプレビューを今のページへ付け直す
+    this.exclusive = (task) => {
+      const result = lock(task);
+      result.then(() => this.refreshLive(), () => this.refreshLive());
+      return result;
+    };
+    this.liveViewers = new Set();
+    this.livePage = null;
+    this.liveFrame = null;
+    this.liveMode = null;
+    this.liveViewport = null;
+    this.liveTarget = null;
+    this.liveRun = Promise.resolve();
+    this.liveChain = Promise.resolve();
     this.context = null;
     this.page = null;
     this.boundPages = new WeakSet();
@@ -88,6 +126,9 @@ export class BrowserManager {
       capturesDir: this.capturesDir,
       userDataDir: this.userDataDir,
       sandboxFallback: this.sandboxFallback,
+      live: this.livePage
+        ? { mode: this.liveMode, viewport: this.liveViewport, target: this.liveTarget }
+        : null,
       capture: {
         width: CAPTURE_WIDTH,
         height: CAPTURE_HEIGHT,
@@ -115,32 +156,12 @@ export class BrowserManager {
     });
   }
 
-  back() {
-    return this.exclusive(async () => {
-      const page = await this.requirePage();
-      await page.goBack({ waitUntil: "domcontentloaded", timeout: 45000 }).catch(() => {});
-    });
-  }
-
-  forward() {
-    return this.exclusive(async () => {
-      const page = await this.requirePage();
-      await page.goForward({ waitUntil: "domcontentloaded", timeout: 45000 }).catch(() => {});
-    });
-  }
-
-  reload() {
-    return this.exclusive(async () => {
-      const page = await this.requirePage();
-      await page.reload({ waitUntil: "domcontentloaded", timeout: 45000 });
-    });
-  }
-
   capture() {
     return this.exclusive(async () => {
       const page = await this.requirePage();
       this.capturing = true;
       this.suspendProfileSync = true;
+      await this.refreshLive();
       try {
         await this.prepareCurrentPage();
         const buffer = await captureVideoFrame(page);
@@ -174,35 +195,122 @@ export class BrowserManager {
     });
   }
 
+  addLiveViewer(onFrame) {
+    this.liveViewers.add(onFrame);
+    if (this.liveFrame) onFrame(this.liveFrame);
+    void this.refreshLive();
+    return () => {
+      this.liveViewers.delete(onFrame);
+      void this.refreshLive();
+    };
+  }
+
+  refreshLive() {
+    this.liveChain = this.liveChain.then(() => this.applyLive()).catch(() => {});
+    return this.liveChain;
+  }
+
+  async applyLive() {
+    const page = this.page && !this.page.isClosed() ? this.page : null;
+    const wanted = this.liveViewers.size && !this.capturing ? page : null;
+    if (wanted === this.livePage) return;
+    this.livePage = null;
+    await this.liveRun;
+    this.liveFrame = null;
+    this.liveMode = null;
+    this.liveViewport = null;
+    this.liveTarget = null;
+    if (!wanted) return;
+    this.livePage = wanted;
+    this.liveRun = this.runLive(wanted);
+  }
+
+  publishLive(frame) {
+    this.liveFrame = frame;
+    for (const viewer of this.liveViewers) viewer(frame);
+  }
+
+  // 撮影と同じ video の映像だけを canvas で縮小して流す。読み込み中は何回か
+  // 待ち直し、それでも映像を読み出せないページ（CORS のない別オリジンなど）
+  // では、screencast をその video の位置で切り抜く。
+  async runLive(page) {
+    const active = () => this.livePage === page && !page.isClosed();
+    let video = null;
+    let locatedAt = 0;
+    let tryVideo = false;
+    let lastTime = null;
+    let lastUrl = null;
+    let loadingTries = 0;
+    let screencasting = false;
+    try {
+      while (active()) {
+        if (Date.now() - locatedAt >= LIVE_LOCATE_MS) {
+          locatedAt = Date.now();
+          video = await findBestVideo(page).catch(() => null);
+          const box = video ? await video.locator.boundingBox().catch(() => null) : null;
+          this.liveTarget = box && box.width >= 1 && box.height >= 1 ? box : null;
+          tryVideo = Boolean(video);
+          if (page.url() !== lastUrl) {
+            lastUrl = page.url();
+            loadingTries = 0;
+          }
+        }
+        if (!video && loadingTries < LIVE_LOAD_RETRIES) {
+          // 読み込み直後は video がまだ候補にならないので、すぐ探し直す
+          loadingTries += 1;
+          locatedAt = 0;
+          if (!screencasting) this.liveMode = "loading";
+          await delay(LIVE_PAGE_MS);
+          continue;
+        }
+        const grabbed = tryVideo
+          ? await video.locator.evaluate(grabVideoFrame, { ...LIVE_GRAB, after: lastTime }).catch(() => null)
+          : null;
+        if (!active()) break;
+        if (grabbed?.loading && loadingTries < LIVE_LOAD_RETRIES) {
+          loadingTries += 1;
+          if (!screencasting) this.liveMode = "loading";
+          await delay(LIVE_PAGE_MS);
+          continue;
+        }
+        if (grabbed && !grabbed.loading) {
+          loadingTries = 0;
+          if (screencasting) {
+            screencasting = false;
+            await page.stopScreencast();
+          }
+          this.liveMode = "video";
+          lastTime = grabbed.time;
+          if (grabbed.data) this.publishLive(Buffer.from(grabbed.data, "base64"));
+          await delay(LIVE_VIDEO_MS);
+          continue;
+        }
+        tryVideo = false;
+        lastTime = null;
+        this.liveMode = "page";
+        if (!screencasting) {
+          screencasting = true;
+          await page.startScreencast((frame, viewport) => {
+            if (this.livePage !== page || this.liveMode !== "page") return;
+            if (viewport.width && viewport.height) this.liveViewport = viewport;
+            this.publishLive(frame);
+          }).catch(() => {
+            screencasting = false;
+          });
+        }
+        await delay(LIVE_PAGE_MS);
+      }
+    } finally {
+      if (screencasting) await page.stopScreencast();
+    }
+  }
+
   syncWithConfig() {
     return this.exclusive(() => this.syncProfile());
   }
 
   close() {
     return this.exclusive(() => this.closeContext());
-  }
-
-  installChromium() {
-    return new Promise((resolve, reject) => {
-      const child = spawn("npx", ["playwright", "install", "chromium"], {
-        cwd: ROOT_DIR,
-        env: process.env,
-      });
-      let log = "";
-      child.stdout.on("data", (chunk) => {
-        log = `${log}${chunk}`.slice(-4000);
-      });
-      child.stderr.on("data", (chunk) => {
-        log = `${log}${chunk}`.slice(-4000);
-      });
-      child.on("error", (error) => {
-        reject(new AppError(error.message, 500, "INSTALL_FAILED"));
-      });
-      child.on("close", (code) => {
-        if (code === 0) resolve({ ok: true, log });
-        else reject(new AppError(`Chromiumの取得に失敗しました\n${log}`, 500, "INSTALL_FAILED"));
-      });
-    });
   }
 
   async ensureContext(profileId) {
@@ -220,27 +328,18 @@ export class BrowserManager {
     this.launching = true;
     try {
       await this.closeContext();
-      const chromium = await loadPlaywright();
       const profile = getProfile(config, profileId);
       const userDataDir = path.join(this.userDataRoot, engine.key);
       await fs.mkdir(userDataDir, { recursive: true });
-      const args = buildLaunchArgs(profile);
-      if (sandbox) {
-        args.push("--no-sandbox", "--disable-setuid-sandbox");
-      }
-      const options = {
-        headless: process.env.KOMA_HEADLESS === "1",
-        viewport: { width: CAPTURE_WIDTH, height: CAPTURE_HEIGHT },
-        screen: { width: CAPTURE_WIDTH, height: CAPTURE_HEIGHT },
-        deviceScaleFactor: 1,
-        locale: "ja-JP",
-        args,
-        ignoreDefaultArgs: ignoredArgs(engine),
-      };
-      if (engine.channel) options.channel = engine.channel;
-      if (engine.executablePath && !engine.channel) options.executablePath = engine.executablePath;
+      let context;
       try {
-        this.context = await chromium.launchPersistentContext(userDataDir, options);
+        context = await launchChrome({
+          executable: engine.executablePath,
+          userDataDir,
+          profileArgs: buildLaunchArgs(profile),
+          headless: process.env.KOMA_HEADLESS === "1",
+          sandbox,
+        });
       } catch (error) {
         const text = String(error?.message || error);
         if (!sandbox && /sandbox|zygote|namespace/i.test(text)) {
@@ -250,23 +349,26 @@ export class BrowserManager {
         }
         throw explainLaunchError(error);
       }
-      this.context.on("close", () => {
+      context.on("close", () => {
+        if (this.context !== context) return;
         this.context = null;
         this.page = null;
         this.profileId = null;
+        void this.refreshLive();
       });
+      this.context = context;
       this.engineInfo = engine;
       this.profileId = profileId;
-      this.userDataDir = userDataDir;
+      this.userDataDir = context.userDataDir || userDataDir;
       this.sandboxFallback = sandbox || this.sandboxFallback;
-      this.version = this.context.browser()?.version() || null;
-      await this.context.addInitScript(() => {
+      this.version = context.browser()?.version() || null;
+      await context.addInitScript(() => {
         Object.defineProperty(Navigator.prototype, "webdriver", {
           configurable: true,
           get: () => undefined,
         });
       });
-      this.page = this.context.pages()[0] || await this.context.newPage();
+      this.page = context.pages()[0] || await context.newPage();
       this.bindPage(this.page);
       await this.prepareCurrentPage();
     } finally {
@@ -284,6 +386,7 @@ export class BrowserManager {
     });
     page.on("close", () => {
       if (this.page === page) this.page = null;
+      void this.refreshLive();
     });
   }
 
@@ -357,14 +460,6 @@ export class BrowserManager {
   }
 }
 
-function ignoredArgs(engine) {
-  const ignored = ["--enable-automation"];
-  if (engine.key === "chrome") {
-    ignored.push("--disable-infobars", "--disable-edgeupdater", "--edge-skip-compat-layer-relaunch");
-  }
-  return ignored;
-}
-
 function pageHost(url) {
   try {
     return new URL(url).hostname;
@@ -389,16 +484,7 @@ async function uniqueName(directory, filename) {
   }
 }
 
-let chromeCache = { at: 0, value: null };
-
-export async function installedChromeVersion() {
-  if (Date.now() - chromeCache.at < 30_000) return chromeCache.value;
+export function installedChrome() {
   const executable = findSystemChrome();
-  chromeCache = {
-    at: Date.now(),
-    value: executable
-      ? { path: executable, version: await readChromeVersion(executable) }
-      : null,
-  };
-  return chromeCache.value;
+  return executable ? { path: executable } : null;
 }

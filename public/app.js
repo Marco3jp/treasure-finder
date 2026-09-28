@@ -15,10 +15,55 @@ const stageEmpty = document.querySelector("#stage-empty");
 const shotMeta = document.querySelector("#shot-meta");
 const filmstrip = document.querySelector("#filmstrip");
 const captureButton = document.querySelector("#capture");
+const live = document.querySelector("#live");
+const liveEmpty = document.querySelector("#live-empty");
+const liveStage = document.querySelector("#live-stage");
+const liveMeta = document.querySelector("#live-meta");
+const liveNote = document.querySelector("#live-note");
 
 let config = null;
 let profiles = [];
 let busy = false;
+let browserOpen = false;
+let liveState = null;
+
+// 画面が見えていてブラウザが開いている間だけ、MJPEG を受け取る
+function connectLive() {
+  const wanted = browserOpen && document.visibilityState === "visible";
+  live.hidden = !browserOpen;
+  liveEmpty.hidden = browserOpen;
+  if (wanted && !live.getAttribute("src")) live.src = `/api/live?t=${Date.now()}`;
+  if (!wanted && live.getAttribute("src")) live.removeAttribute("src");
+}
+
+// screencast はページ全体なので、撮影対象の video の範囲だけが枠に収まるよう拡大して切り抜く
+function placeLive() {
+  const viewport = liveState?.viewport;
+  if (liveState?.mode !== "page" || !viewport) {
+    live.removeAttribute("style");
+    return;
+  }
+  const box = liveState.target || { x: 0, y: 0, width: viewport.width, height: viewport.height };
+  const stageWidth = liveStage.clientWidth;
+  const stageHeight = liveStage.clientHeight;
+  const scale = Math.min(stageWidth / box.width, stageHeight / box.height);
+  const left = (stageWidth - box.width * scale) / 2 - box.x * scale;
+  const top = (stageHeight - box.height * scale) / 2 - box.y * scale;
+  const right = (viewport.width - box.x - box.width) * scale;
+  const bottom = (viewport.height - box.y - box.height) * scale;
+  Object.assign(live.style, {
+    width: `${viewport.width * scale}px`,
+    height: `${viewport.height * scale}px`,
+    left: `${left}px`,
+    top: `${top}px`,
+    clipPath: `inset(${box.y * scale}px ${right}px ${bottom}px ${box.x * scale}px)`,
+    objectFit: "fill",
+  });
+}
+
+live.addEventListener("error", () => live.removeAttribute("src"));
+document.addEventListener("visibilitychange", connectLive);
+window.addEventListener("resize", placeLive);
 
 function showError(message) {
   if (!message) {
@@ -115,6 +160,23 @@ function renderConfig() {
 }
 
 function renderStatus(status) {
+  browserOpen = status.browserOpen;
+  connectLive();
+  liveState = status.live;
+  placeLive();
+  const mode = status.live?.mode;
+  const fallback = mode === "page";
+  liveMeta.textContent = {
+    video: "撮影される video の映像",
+    loading: "video を読み込んでいます",
+    page: status.live?.target ? "ページを video の位置で切り抜き" : "ページ全体",
+  }[mode] || "";
+  liveNote.hidden = !fallback;
+  if (fallback && status.live.target) {
+    liveNote.textContent = "video の映像を直接読み出せなかったので、ページの表示を video の位置で切り抜いています。操作ボタンや字幕が重なって見えることがあり、撮影結果とは見た目が違う場合があります。";
+  } else if (fallback) {
+    liveNote.textContent = "撮影できる video 要素を検出できていません。ページ全体を映しています。動画が再生されているか確認してください。";
+  }
   lamp.className = "lamp";
   if (status.capturing) lamp.classList.add("hot");
   else if (status.launching) lamp.classList.add("busy");
@@ -133,24 +195,48 @@ function renderStatus(status) {
     domainLine.textContent = "ドメインごとの起動方法は、そのドメインを開いたときに切り替わります。";
   }
   if (status.url && document.activeElement !== urlInput) urlInput.value = status.url;
-  if (status.chrome?.version) {
-    chromeLine.textContent = `このPCの Google Chrome は ${status.chrome.version} です。`;
+  if (status.chrome?.path) {
+    chromeLine.textContent = "このPCの Google Chrome を、普段のウィンドウとは別のユーザーデータで起動します。";
   } else {
-    chromeLine.textContent = "このPCでは Google Chrome が見つかりません。Playwright Chromium を取得できます。";
+    chromeLine.textContent = "このPCでは Google Chrome が見つかりません。インストールするか、実行ファイルのパスを指定してください。";
   }
   if (status.lastError && !busy) showError(status.lastError);
   captureButton.disabled = busy || !status.browserOpen || status.capturing;
 }
 
-function renderCaptures(files) {
-  filmstrip.replaceChildren();
-  if (!files?.length) return;
-  const latest = files[0];
+// 一覧は定期的に読み直すので、選んだカットは新しく撮るまで保つ
+let shownFiles = "";
+let latestName = null;
+let selectedName = null;
+
+function showShot(file) {
+  selectedName = file.name;
   preview.hidden = false;
   stageEmpty.hidden = true;
-  preview.src = `/captures/${latest.name}?t=${latest.mtimeMs}`;
-  preview.alt = latest.name;
-  shotMeta.textContent = latest.name;
+  preview.src = `/captures/${file.name}?t=${file.mtimeMs}`;
+  preview.alt = file.name;
+  shotMeta.textContent = file.name;
+}
+
+function renderCaptures(files) {
+  const key = (files || []).map((file) => `${file.name}:${file.mtimeMs}`).join("|");
+  if (key === shownFiles) return;
+  shownFiles = key;
+  filmstrip.replaceChildren();
+  if (!files?.length) {
+    latestName = null;
+    selectedName = null;
+    preview.hidden = true;
+    preview.removeAttribute("src");
+    stageEmpty.hidden = false;
+    shotMeta.textContent = "";
+    return;
+  }
+  const latest = files[0];
+  const selected = files.find((file) => file.name === selectedName);
+  if (latest.name !== latestName || !selected) showShot(latest);
+  else showShot(selected);
+  latestName = latest.name;
   for (const file of files) {
     const item = document.createElement("li");
     const button = document.createElement("button");
@@ -159,11 +245,7 @@ function renderCaptures(files) {
     image.src = `/captures/${file.name}?t=${file.mtimeMs}`;
     image.alt = file.name;
     button.append(image);
-    button.addEventListener("click", () => {
-      preview.src = image.src;
-      preview.alt = file.name;
-      shotMeta.textContent = file.name;
-    });
+    button.addEventListener("click", () => showShot(file));
     item.append(button);
     filmstrip.appendChild(item);
   }
@@ -226,18 +308,6 @@ document.querySelector("#nav-form").addEventListener("submit", async (event) => 
   }
 });
 
-for (const [id, path] of [["back", "/api/back"], ["forward", "/api/forward"], ["reload", "/api/reload"]]) {
-  document.querySelector(`#${id}`).addEventListener("click", async () => {
-    showError("");
-    try {
-      await api(path, { method: "POST", body: "{}" });
-    } catch (error) {
-      showError(error.message);
-    }
-    await refresh();
-  });
-}
-
 document.querySelector("#sample").addEventListener("click", () => {
   urlInput.value = `${location.origin}/sample.html`;
   document.querySelector("#nav-form").requestSubmit();
@@ -266,20 +336,6 @@ document.querySelector("#engine-form").addEventListener("submit", async (event) 
   config.engine = selected ? selected.value : "auto";
   config.executablePath = document.querySelector("#executable-path").value.trim();
   await saveConfig();
-});
-
-document.querySelector("#install-chromium").addEventListener("click", async () => {
-  busy = true;
-  showError("");
-  chromeLine.textContent = "Chromium を取得しています。回線によっては数分かかります。";
-  try {
-    await api("/api/browser/install-chromium", { method: "POST", body: "{}" });
-    chromeLine.textContent = "Playwright Chromium を取得しました。レンダラを Chromium にして保存すると使います。";
-  } catch (error) {
-    showError(error.message);
-  } finally {
-    busy = false;
-  }
 });
 
 document.querySelector("#rule-form").addEventListener("submit", async (event) => {

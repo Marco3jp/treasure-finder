@@ -1,4 +1,3 @@
-import { execFile } from "node:child_process";
 import { accessSync, constants } from "node:fs";
 import path from "node:path";
 import { AppError } from "./errors.js";
@@ -36,17 +35,13 @@ export function findSystemChrome() {
   return candidates.find((candidate) => candidate && canExecute(candidate)) || null;
 }
 
-export function readChromeVersion(executable) {
-  return new Promise((resolve) => {
-    execFile(executable, ["--version"], { timeout: 5000 }, (error, stdout) => {
-      if (error) {
-        resolve(null);
-        return;
-      }
-      const match = /(\d+\.\d+\.\d+\.\d+)/.exec(stdout);
-      resolve(match ? match[1] : stdout.trim());
-    });
-  });
+function chromeEngine(chromePath) {
+  return {
+    key: "chrome",
+    label: "Google Chrome",
+    executablePath: chromePath,
+    overrideUa: false,
+  };
 }
 
 export async function resolveEngine(config) {
@@ -62,50 +57,25 @@ export async function resolveEngine(config) {
       overrideUa: true,
     };
   }
-  if (config.engine === "chromium") {
-    return {
-      key: "chromium",
-      label: "Playwright Chromium",
-      overrideUa: true,
-    };
-  }
-  if (config.engine === "chrome") {
+  if (config.engine === "chrome" || config.engine === "auto" || config.engine === "chromium" || !config.engine) {
     if (!chromePath) {
-      throw new AppError("Google Chrome が見つかりません", 400, "NO_CHROME");
+      throw new AppError(
+        "Google Chrome が見つかりません。インストールするか、実行ファイルのパスを指定してください。",
+        400,
+        "NO_CHROME",
+      );
     }
-    return {
-      key: "chrome",
-      label: "Google Chrome",
-      channel: "chrome",
-      executablePath: chromePath,
-      overrideUa: false,
-    };
+    return chromeEngine(chromePath);
   }
-  if (chromePath) {
-    return {
-      key: "chrome",
-      label: "Google Chrome",
-      channel: "chrome",
-      executablePath: chromePath,
-      overrideUa: false,
-    };
-  }
-  return {
-    key: "chromium",
-    label: "Playwright Chromium",
-    overrideUa: true,
-  };
+  if (chromePath) return chromeEngine(chromePath);
+  throw new AppError(
+    "Google Chrome が見つかりません。インストールするか、実行ファイルのパスを指定してください。",
+    400,
+    "NO_CHROME",
+  );
 }
 
 export function explainLaunchError(error) {
   if (error instanceof AppError) return error;
-  const text = String(error?.message || error);
-  if (/Executable doesn't exist|playwright install/i.test(text)) {
-    return new AppError(
-      "Playwright Chromium がまだありません。操作パネルの「Chromiumを取得」か、npm run update-browser を実行してください。",
-      500,
-      "NO_BROWSER",
-    );
-  }
-  return new AppError(text, 500, "LAUNCH_FAILED");
+  return new AppError(String(error?.message || error), 500, "LAUNCH_FAILED");
 }
