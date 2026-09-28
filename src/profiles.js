@@ -12,7 +12,6 @@ export const BASE_ARGS = [
   "--no-default-browser-check",
   "--force-device-scale-factor=1",
   "--autoplay-policy=no-user-gesture-required",
-  "--disable-blink-features=AutomationControlled",
   "--disable-session-crashed-bubble",
   "--hide-crash-restore-bubble",
 ];
