@@ -25,7 +25,17 @@ function applyCaptureBox(element, metrics) {
     node.style.setProperty("perspective", "none", "important");
     node.style.setProperty("contain", "none", "important");
     node.style.setProperty("will-change", "auto", "important");
-    if (node !== element) node.style.setProperty("overflow", "visible", "important");
+    if (node !== element) {
+      // 親が重なり順のまとまりを作ると、video の z-index がプレイヤーの UI を越えられない
+      node.style.setProperty("overflow", "visible", "important");
+      node.style.setProperty("z-index", "auto", "important");
+      node.style.setProperty("isolation", "auto", "important");
+      node.style.setProperty("opacity", "1", "important");
+      node.style.setProperty("mix-blend-mode", "normal", "important");
+      node.style.setProperty("clip-path", "none", "important");
+      node.style.setProperty("mask", "none", "important");
+      node.style.setProperty("backdrop-filter", "none", "important");
+    }
   }
   if (element instanceof HTMLVideoElement) {
     element.setAttribute("data-koma-controls", element.controls ? "1" : "0");
@@ -88,7 +98,7 @@ function revertCaptureBox(element) {
   visit(root);
 }
 
-async function findBestVideo(page) {
+export async function findBestVideo(page) {
   let best = null;
   let bestScore = -1;
   for (const frame of await page.frames()) {
@@ -221,11 +231,47 @@ async function waitForBestVideo(page) {
   return video;
 }
 
+// ページ側で実行される。映像だけを 1920×1080 の黒地に収めて JPEG にする。
+// DRM の映像は黒くなり、CORS のない別オリジンの映像は読み出せないので null を返す。
+function drawVideoFrame(video, options) {
+  if (video.readyState < 2 || !video.videoWidth || video.mediaKeys) return null;
+  const canvas = document.createElement("canvas");
+  canvas.width = options.width;
+  canvas.height = options.height;
+  const context = canvas.getContext("2d");
+  context.fillStyle = "#000";
+  context.fillRect(0, 0, canvas.width, canvas.height);
+  const scale = Math.min(canvas.width / video.videoWidth, canvas.height / video.videoHeight);
+  const width = video.videoWidth * scale;
+  const height = video.videoHeight * scale;
+  context.imageSmoothingQuality = "high";
+  context.drawImage(video, (canvas.width - width) / 2, (canvas.height - height) / 2, width, height);
+  try {
+    const url = canvas.toDataURL("image/jpeg", options.quality);
+    return url.slice(url.indexOf(",") + 1);
+  } catch {
+    return null;
+  }
+}
+
+async function drawCapture(locator) {
+  const data = await locator.evaluate(drawVideoFrame, {
+    width: CAPTURE_WIDTH,
+    height: CAPTURE_HEIGHT,
+    quality: JPEG_QUALITY / 100,
+  }).catch(() => null);
+  if (!data) return null;
+  const buffer = Buffer.from(data, "base64");
+  return isExactFrame(buffer) ? buffer : null;
+}
+
 export async function captureVideoFrame(page) {
   const video = await waitForBestVideo(page);
   if (!video) {
     throw new AppError("表示中の video 要素が見つかりません", 422, "NO_VIDEO");
   }
+  const drawn = await drawCapture(video.locator);
+  if (drawn) return drawn;
   const chain = [];
   try {
     const frames = await expandFrameChain(video.frame);
