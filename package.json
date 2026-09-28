@@ -1,9 +1,9 @@
 {
-  "name": "koma",
+  "name": "treasure-finder",
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "description": "video要素を1920x1080のJPEGで残すデスクトップアプリ",
+  "description": "Treasure Finder。video要素を1920x1080のJPEGで残すデスクトップアプリ",
   "scripts": {
     "start": "node src/server.js",
     "test": "node --test",
