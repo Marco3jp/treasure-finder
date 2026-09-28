@@ -67,13 +67,23 @@ function readBody(req) {
   });
 }
 
-function safeFile(root, pathname) {
+export function isEmbedded(file) {
+  return /(?:\$bunfs|~bun)(?:[/\\]|$)/i.test(String(file));
+}
+
+function pathApi(root) {
+  return /^[A-Za-z]:[\\/]/.test(root) || root.includes("\\") ? path.win32 : path.posix;
+}
+
+export function safeFile(root, pathname) {
   const decoded = decodeURIComponent(pathname);
-  const relative = decoded === "/" ? "index.html" : decoded.replace(/^\/+/, "");
+  const relative = decoded === "/" ? "index.html" : decoded.replace(/^[/\\]+/, "");
   if (isEmbedded(root)) {
-    const file = path.posix.normalize(path.posix.join(root, relative));
-    const prefix = root.endsWith("/") ? root : `${root}/`;
-    if (file !== root && !file.startsWith(prefix)) return null;
+    const api = pathApi(root);
+    const base = api.normalize(root);
+    const file = api.normalize(api.join(base, relative));
+    const prefix = base.endsWith(api.sep) ? base : `${base}${api.sep}`;
+    if (file !== base && !file.startsWith(prefix)) return null;
     return file;
   }
   const file = path.resolve(root, relative);
@@ -82,14 +92,18 @@ function safeFile(root, pathname) {
   return file;
 }
 
-function isEmbedded(file) {
-  return String(file).includes("$bunfs");
+async function readEmbedded(file) {
+  if (typeof Bun !== "undefined" && typeof Bun.file === "function") {
+    const blob = Bun.file(file);
+    if (await blob.exists()) return Buffer.from(await blob.arrayBuffer());
+  }
+  return fsp.readFile(file);
 }
 
 async function serveEmbedded(req, res, file) {
   let data;
   try {
-    data = await fsp.readFile(file);
+    data = await readEmbedded(file);
   } catch {
     sendJson(res, { error: "見つかりません" }, 404);
     return;
@@ -161,7 +175,10 @@ function serveFile(req, res, file) {
         "Accept-Ranges": "bytes",
         "Cache-Control": "no-cache",
       });
-      fs.createReadStream(file, { start, end }).pipe(res);
+      fs.createReadStream(file, { start, end }).on("error", () => {
+        if (!res.headersSent) sendJson(res, { error: "見つかりません" }, 404);
+        else res.destroy();
+      }).pipe(res);
       return;
     }
     res.writeHead(200, {
@@ -170,7 +187,10 @@ function serveFile(req, res, file) {
       "Accept-Ranges": "bytes",
       "Cache-Control": "no-cache",
     });
-    fs.createReadStream(file).pipe(res);
+    fs.createReadStream(file).on("error", () => {
+      if (!res.headersSent) sendJson(res, { error: "見つかりません" }, 404);
+      else res.destroy();
+    }).pipe(res);
   });
 }
 
