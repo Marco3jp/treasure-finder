@@ -25,7 +25,7 @@ test("Windowsの同梱ファイルはB:\\~BUNから出ていけない", () => {
 });
 
 test("設定の保存と操作パネルの配信", async () => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), "koma-server-"));
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "treasure-finder-server-"));
   const store = new ConfigStore(path.join(root, "config.json"));
   const manager = new BrowserManager(store, {
     userDataRoot: path.join(root, "user-data"),

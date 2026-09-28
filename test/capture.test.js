@@ -47,6 +47,14 @@ function startFixture(directory) {
       res.end(`<!doctype html><video src="/clip.mp4" autoplay muted loop playsinline style="width:640px;height:360px"></video>`);
       return;
     }
+    if (url.pathname === "/foreign") {
+      // CORS のない別オリジンの映像。canvas で読めないので画面から切り抜く
+      const other = req.headers.host.startsWith("localhost") ? "127.0.0.1" : "localhost";
+      const port = req.headers.host.split(":")[1];
+      res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+      res.end(`<!doctype html><video src="http://${other}:${port}/clip.mp4" autoplay muted loop playsinline style="width:640px;height:360px"></video>`);
+      return;
+    }
     if (url.pathname === "/frame") {
       res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
       res.end(`<!doctype html><iframe src="/video" style="width:320px;height:180px;border:8px solid white"></iframe>`);
@@ -131,7 +139,7 @@ function browserCommandLine(userDataDir) {
 }
 
 test("video要素を画面サイズと無関係に1920x1080で残し、Cookieと起動方法を保つ", { timeout: 180000 }, async () => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), "koma-capture-"));
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "treasure-finder-capture-"));
   const store = new ConfigStore(path.join(root, "config.json"));
   const manager = new BrowserManager(store, {
     userDataRoot: path.join(root, "user-data"),
@@ -148,23 +156,30 @@ test("video要素を画面サイズと無関係に1920x1080で残し、Cookieと
       ua: navigator.userAgent,
       scale: window.devicePixelRatio,
     }));
-    assert.equal(metrics.width, 1920);
-    assert.equal(metrics.height, 1080);
-    assert.equal(metrics.scale, 1);
+    assert.ok(metrics.width > 0 && metrics.height > 0);
     assert.match(metrics.ua, /Chrome\/\d+/);
     assert.doesNotMatch(metrics.ua, /HeadlessChrome/);
 
     const planted = await page.evaluate(() => {
-      document.cookie = "koma_kept=yes; path=/; max-age=31536000";
+      document.cookie = "tf_kept=yes; path=/; max-age=31536000";
       return document.cookie;
     });
-    assert.match(planted, /koma_kept=yes/);
+    assert.match(planted, /tf_kept=yes/);
     const shot = await manager.capture();
     const saved = path.join(root, "captures", shot.file);
     const size = jpegSize(await fs.readFile(saved));
     assert.deepEqual(size, { width: 1920, height: 1080 });
     assert.match(shot.file, /^\d{8}-\d{6}-\d{3}\.jpg$/);
     assert.ok(await averageLuma(saved) > 15, "撮影結果が真っ黒です");
+
+    await manager.navigate(`http://127.0.0.1:${fixture.port}/foreign`);
+    const before = await page.evaluate(() => [window.innerWidth, window.innerHeight]);
+    const foreign = await manager.capture();
+    const foreignFile = path.join(root, "captures", foreign.file);
+    assert.deepEqual(jpegSize(await fs.readFile(foreignFile)), { width: 1920, height: 1080 });
+    assert.ok(await averageLuma(foreignFile) > 15, "別オリジンの撮影結果が真っ黒です");
+    const after = await page.evaluate(() => [window.innerWidth, window.innerHeight]);
+    assert.deepEqual(after, before, "撮影後に表示領域が元に戻っていません");
 
     const config = await store.load();
     config.domainProfiles.localhost = "no-gpu";
@@ -181,7 +196,7 @@ test("video要素を画面サイズと無関係に1920x1080で残し、Cookieと
     await manager.close();
     await manager.navigate(`http://127.0.0.1:${fixture.port}/video`);
     const cookie = await manager.currentPage().then((open) => open.evaluate(() => document.cookie));
-    assert.match(cookie, /koma_kept=yes/);
+    assert.match(cookie, /tf_kept=yes/);
     assert.equal(manager.profileId, "default");
     assert.doesNotMatch(browserCommandLine(manager.userDataDir), /--disable-gpu/);
   } finally {

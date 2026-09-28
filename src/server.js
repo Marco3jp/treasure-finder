@@ -331,7 +331,7 @@ export function startServer({ port = PORT, host = HOST, open = true } = {}) {
   server.listen(port, host, () => {
     const address = `http://${host}:${port}`;
     console.log(`Treasure Finder  ${address}`);
-    if (open && process.env.KOMA_NO_OPEN !== "1") openPath(address);
+    if (open && process.env.TREASURE_FINDER_NO_OPEN !== "1") openPath(address);
   });
   const shutdown = async () => {
     await manager.close();

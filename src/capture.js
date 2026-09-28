@@ -3,6 +3,9 @@ import { jpegSize } from "./jpeg.js";
 import { CAPTURE_HEIGHT, CAPTURE_WIDTH, JPEG_QUALITY } from "./profiles.js";
 
 const METRICS = { width: CAPTURE_WIDTH, height: CAPTURE_HEIGHT };
+// 画質の切り替えはセグメントの読み込みを待つので数秒かかる
+const UPGRADE_WAIT_MS = 5000;
+const SETTLE_MS = 700;
 
 function applyCaptureBox(element, metrics) {
   const visited = [];
@@ -17,9 +20,9 @@ function applyCaptureBox(element, metrics) {
     current = root && root.host ? root.host : null;
   }
   for (const node of visited) {
-    if (node.getAttribute("data-koma-marked") === "1") continue;
-    node.setAttribute("data-koma-style", node.getAttribute("style") ?? "");
-    node.setAttribute("data-koma-marked", "1");
+    if (node.getAttribute("data-tf-marked") === "1") continue;
+    node.setAttribute("data-tf-style", node.getAttribute("style") ?? "");
+    node.setAttribute("data-tf-marked", "1");
     node.style.setProperty("transform", "none", "important");
     node.style.setProperty("filter", "none", "important");
     node.style.setProperty("perspective", "none", "important");
@@ -38,7 +41,7 @@ function applyCaptureBox(element, metrics) {
     }
   }
   if (element instanceof HTMLVideoElement) {
-    element.setAttribute("data-koma-controls", element.controls ? "1" : "0");
+    element.setAttribute("data-tf-controls", element.controls ? "1" : "0");
     element.controls = false;
   }
   const entries = {
@@ -71,15 +74,15 @@ function applyCaptureBox(element, metrics) {
 
 function revertCaptureBox(element) {
   function restoreMarked(node) {
-    const previous = node.getAttribute("data-koma-style");
+    const previous = node.getAttribute("data-tf-style");
     if (previous) node.setAttribute("style", previous);
     else node.removeAttribute("style");
-    if (node instanceof HTMLVideoElement && node.hasAttribute("data-koma-controls")) {
-      node.controls = node.getAttribute("data-koma-controls") === "1";
+    if (node instanceof HTMLVideoElement && node.hasAttribute("data-tf-controls")) {
+      node.controls = node.getAttribute("data-tf-controls") === "1";
     }
-    node.removeAttribute("data-koma-style");
-    node.removeAttribute("data-koma-marked");
-    node.removeAttribute("data-koma-controls");
+    node.removeAttribute("data-tf-style");
+    node.removeAttribute("data-tf-marked");
+    node.removeAttribute("data-tf-controls");
   }
   const root = element.ownerDocument;
   if (!root) return;
@@ -87,7 +90,7 @@ function revertCaptureBox(element) {
   const visit = (scope) => {
     if (!scope?.querySelectorAll || seen.has(scope)) return;
     seen.add(scope);
-    for (const node of [...scope.querySelectorAll("[data-koma-marked='1']")]) {
+    for (const node of [...scope.querySelectorAll("[data-tf-marked='1']")]) {
       if (node.shadowRoot) visit(node.shadowRoot);
       restoreMarked(node);
     }
@@ -164,20 +167,48 @@ async function restoreFrameChain(chain, locator) {
   }
 }
 
-async function waitForPresentedFrame(locator) {
-  await locator.evaluate((video) => new Promise((resolve) => {
+// ページ側で実行される。表示を広げたあと、プレイヤーが撮影サイズに見合う
+// 解像度の映像へ切り替えて、そのフレームを表示するまで待つ。停止中や、
+// 最初から十分な解像度なら次のフレームだけ待つ。上がらなければ timeout で諦める。
+function waitForSharpFrame(video, options) {
+  const sharp = () => video.videoWidth >= options.width || video.videoHeight >= options.height;
+  return new Promise((resolve) => {
     let settled = false;
+    let timer = null;
     const finish = () => {
       if (settled) return;
       settled = true;
-      resolve();
+      clearTimeout(timer);
+      video.removeEventListener("resize", onResize);
+      resolve({ width: video.videoWidth, height: video.videoHeight });
     };
-    if (typeof video.requestVideoFrameCallback === "function") {
-      video.requestVideoFrameCallback(() => finish());
+    const afterPresented = () => {
+      if (typeof video.requestVideoFrameCallback === "function" && !video.paused) {
+        video.requestVideoFrameCallback(() => finish());
+      }
+      requestAnimationFrame(() => requestAnimationFrame(() => {
+        if (video.paused) finish();
+      }));
+    };
+    function onResize() {
+      if (sharp()) afterPresented();
     }
-    requestAnimationFrame(() => requestAnimationFrame(() => finish()));
-    setTimeout(finish, 700);
-  }));
+    if (video.paused || sharp()) {
+      timer = setTimeout(finish, options.settle);
+      afterPresented();
+      return;
+    }
+    timer = setTimeout(finish, options.timeout);
+    video.addEventListener("resize", onResize);
+  });
+}
+
+async function waitForSharpVideo(locator) {
+  return locator.evaluate(waitForSharpFrame, {
+    ...METRICS,
+    settle: SETTLE_MS,
+    timeout: UPGRADE_WAIT_MS,
+  }).catch(() => null);
 }
 
 async function screenshotElement(locator) {
@@ -270,14 +301,17 @@ export async function captureVideoFrame(page) {
   if (!video) {
     throw new AppError("表示中の video 要素が見つかりません", 422, "NO_VIDEO");
   }
-  const drawn = await drawCapture(video.locator);
-  if (drawn) return drawn;
   const chain = [];
+  // 表示の大きさで配信の画質を選ぶプレイヤーがあるので、撮影サイズに
+  // 広げてから、その大きさで読み込まれたフレームを待って撮る
+  await page.setViewportSize(METRICS);
   try {
     const frames = await expandFrameChain(video.frame);
     chain.push(...frames);
     await video.locator.evaluate(applyCaptureBox, METRICS);
-    await waitForPresentedFrame(video.locator);
+    await waitForSharpVideo(video.locator);
+    const drawn = await drawCapture(video.locator);
+    if (drawn) return drawn;
     let buffer = await screenshotElement(video.locator);
     if (!isExactFrame(buffer)) {
       const box = await video.locator.boundingBox();
@@ -294,5 +328,6 @@ export async function captureVideoFrame(page) {
     return buffer;
   } finally {
     await restoreFrameChain(chain, video.locator);
+    await page.clearViewportSize().catch(() => {});
   }
 }
