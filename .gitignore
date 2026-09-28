@@ -1,0 +1,6 @@
+node_modules/
+data/user-data/
+data/captures/
+data/config.json
+*.log
+.DS_Store
