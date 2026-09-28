@@ -47,9 +47,17 @@ function createEmitter() {
   };
 }
 
-export function chromeLaunchArgs({ userDataDir, profileArgs = [], headless = false, sandbox = false }) {
+export function formatUserDataDir(directory, platform = process.platform) {
+  if (platform === "win32") return String(directory).replaceAll("\\", "/");
+  return directory;
+}
+
+export function chromeLaunchArgs({ userDataDir, profileArgs = [], headless = false, sandbox = false, platform = process.platform }) {
+  // `--user-data-dir` を値なしで置くと、この Chrome はスイッチを無視して
+  // 既定プロファイルへ落ちる。Windows では `\` を `/` にして、コマンドラインの
+  // エスケープでパスが割れないようにする。URL は about:blank だけにする。
   const args = [
-    `--user-data-dir=${userDataDir}`,
+    `--user-data-dir=${formatUserDataDir(userDataDir, platform)}`,
     "--remote-debugging-port=0",
     "--remote-debugging-address=127.0.0.1",
     "--remote-allow-origins=*",
@@ -58,7 +66,7 @@ export function chromeLaunchArgs({ userDataDir, profileArgs = [], headless = fal
     "--disable-backgrounding-occluded-windows",
     "--disable-renderer-backgrounding",
   ];
-  if (process.platform === "linux") {
+  if (platform === "linux") {
     args.push("--password-store=basic", "--disable-dev-shm-usage");
   }
   for (const arg of profileArgs) {
@@ -68,6 +76,26 @@ export function chromeLaunchArgs({ userDataDir, profileArgs = [], headless = fal
   if (sandbox) args.push("--no-sandbox", "--disable-setuid-sandbox");
   args.push("about:blank");
   return args;
+}
+
+export function chromeProcessOptions(platform = process.platform) {
+  // Windows で detached にすると、起動引数が落ちて普段の Chrome にタブだけ開く。
+  return {
+    detached: platform !== "win32",
+    stdio: ["ignore", "pipe", "pipe"],
+  };
+}
+
+function handedToExistingChrome(log) {
+  return /existing browser session|ouverture dans une session|requires a non-default data directory/i.test(String(log || ""));
+}
+
+function chromeExitError(log) {
+  const detail = String(log || "").trim();
+  if (handedToExistingChrome(detail)) {
+    return new Error(`普段の Chrome にタブが渡されて、撮影用のプロセスは起動しませんでした。${detail ? `\n${detail}` : ""}`);
+  }
+  return new Error(`Chromeがすぐに終了しました${detail ? `\n${detail}` : ""}`);
 }
 
 function waitForExit(child, ms) {
@@ -129,8 +157,9 @@ async function waitForDevtools(userDataDir, child, getLog, timeoutMs) {
   let lastError = null;
   while (Date.now() - started < timeoutMs) {
     if (child.exitCode != null || child.signalCode) {
-      throw new Error(`Chromeがすぐに終了しました\n${getLog()}`);
+      throw chromeExitError(getLog());
     }
+    if (handedToExistingChrome(getLog())) throw chromeExitError(getLog());
     try {
       const text = await fs.readFile(file, "utf8");
       const [portLine] = text.trim().split(/\r?\n/);
@@ -694,11 +723,16 @@ class ChromeContext {
       flatten: true,
     });
     const deadline = Date.now() + 15000;
+    let requestedPage = false;
     while (Date.now() < deadline) {
       if (this.child.exitCode != null || this.child.signalCode) {
         throw new Error("Chromeがすぐに終了しました");
       }
       if (this.pageTargets.size) return;
+      if (!requestedPage && Date.now() + 12000 > deadline) {
+        requestedPage = true;
+        await this.cdp.send("Target.createTarget", { url: "about:blank" }).catch(() => {});
+      }
       await delay(50);
     }
     throw new Error("Chromeのウィンドウが開きませんでした");
@@ -773,11 +807,7 @@ export async function launchChrome({ executable, userDataDir, profileArgs, headl
     sandbox,
   });
   let log = "";
-  const child = spawn(executable, args, {
-    detached: true,
-    windowsHide: true,
-    stdio: ["ignore", "pipe", "pipe"],
-  });
+  const child = spawn(executable, args, chromeProcessOptions());
   const append = (chunk) => {
     log = `${log}${chunk}`.slice(-4000);
   };
