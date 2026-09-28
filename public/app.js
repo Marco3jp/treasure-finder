@@ -204,15 +204,39 @@ function renderStatus(status) {
   captureButton.disabled = busy || !status.browserOpen || status.capturing;
 }
 
-function renderCaptures(files) {
-  filmstrip.replaceChildren();
-  if (!files?.length) return;
-  const latest = files[0];
+// 一覧は定期的に読み直すので、選んだカットは新しく撮るまで保つ
+let shownFiles = "";
+let latestName = null;
+let selectedName = null;
+
+function showShot(file) {
+  selectedName = file.name;
   preview.hidden = false;
   stageEmpty.hidden = true;
-  preview.src = `/captures/${latest.name}?t=${latest.mtimeMs}`;
-  preview.alt = latest.name;
-  shotMeta.textContent = latest.name;
+  preview.src = `/captures/${file.name}?t=${file.mtimeMs}`;
+  preview.alt = file.name;
+  shotMeta.textContent = file.name;
+}
+
+function renderCaptures(files) {
+  const key = (files || []).map((file) => `${file.name}:${file.mtimeMs}`).join("|");
+  if (key === shownFiles) return;
+  shownFiles = key;
+  filmstrip.replaceChildren();
+  if (!files?.length) {
+    latestName = null;
+    selectedName = null;
+    preview.hidden = true;
+    preview.removeAttribute("src");
+    stageEmpty.hidden = false;
+    shotMeta.textContent = "";
+    return;
+  }
+  const latest = files[0];
+  const selected = files.find((file) => file.name === selectedName);
+  if (latest.name !== latestName || !selected) showShot(latest);
+  else showShot(selected);
+  latestName = latest.name;
   for (const file of files) {
     const item = document.createElement("li");
     const button = document.createElement("button");
@@ -221,11 +245,7 @@ function renderCaptures(files) {
     image.src = `/captures/${file.name}?t=${file.mtimeMs}`;
     image.alt = file.name;
     button.append(image);
-    button.addEventListener("click", () => {
-      preview.src = image.src;
-      preview.alt = file.name;
-      shotMeta.textContent = file.name;
-    });
+    button.addEventListener("click", () => showShot(file));
     item.append(button);
     filmstrip.appendChild(item);
   }
