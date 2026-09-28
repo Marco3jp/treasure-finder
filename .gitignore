@@ -1,4 +1,5 @@
 node_modules/
+dist/
 data/user-data/
 data/captures/
 data/config.json

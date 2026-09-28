@@ -10,6 +10,11 @@ test("ソフトウェア描画の起動引数にはGPU無効が含まれる", ()
   assert.equal(args.filter((arg) => arg === "--force-device-scale-factor=1").length, 1);
 });
 
+test("以前の Playwright Chromium 指定は自動に戻す", () => {
+  const config = sanitizeConfig({ engine: "chromium" });
+  assert.equal(config.engine, "auto");
+});
+
 test("ドメイン指定とカスタム引数を検証する", () => {
   const config = sanitizeConfig({
     engine: "chrome",

@@ -1,8 +1,8 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { spawn } from "node:child_process";
 import { captureVideoFrame } from "./capture.js";
-import { CAPTURES_DIR, ROOT_DIR, USER_DATA_ROOT } from "./config-store.js";
+import { launchChrome } from "./chrome-app.js";
+import { CAPTURES_DIR, USER_DATA_ROOT } from "./config-store.js";
 import { resolveProfileId } from "./domain.js";
 import { AppError } from "./errors.js";
 import { explainLaunchError, findSystemChrome, readChromeVersion, resolveEngine } from "./engines.js";
@@ -26,11 +26,6 @@ function createLock() {
     current = next.then(() => undefined, () => undefined);
     return next;
   };
-}
-
-async function loadPlaywright() {
-  const playwright = await import("playwright");
-  return playwright.chromium;
 }
 
 export class BrowserManager {
@@ -182,29 +177,6 @@ export class BrowserManager {
     return this.exclusive(() => this.closeContext());
   }
 
-  installChromium() {
-    return new Promise((resolve, reject) => {
-      const child = spawn("npx", ["playwright", "install", "chromium"], {
-        cwd: ROOT_DIR,
-        env: process.env,
-      });
-      let log = "";
-      child.stdout.on("data", (chunk) => {
-        log = `${log}${chunk}`.slice(-4000);
-      });
-      child.stderr.on("data", (chunk) => {
-        log = `${log}${chunk}`.slice(-4000);
-      });
-      child.on("error", (error) => {
-        reject(new AppError(error.message, 500, "INSTALL_FAILED"));
-      });
-      child.on("close", (code) => {
-        if (code === 0) resolve({ ok: true, log });
-        else reject(new AppError(`Chromiumの取得に失敗しました\n${log}`, 500, "INSTALL_FAILED"));
-      });
-    });
-  }
-
   async ensureContext(profileId) {
     const config = await this.store.load();
     const engine = await resolveEngine(config);
@@ -220,27 +192,18 @@ export class BrowserManager {
     this.launching = true;
     try {
       await this.closeContext();
-      const chromium = await loadPlaywright();
       const profile = getProfile(config, profileId);
       const userDataDir = path.join(this.userDataRoot, engine.key);
       await fs.mkdir(userDataDir, { recursive: true });
-      const args = buildLaunchArgs(profile);
-      if (sandbox) {
-        args.push("--no-sandbox", "--disable-setuid-sandbox");
-      }
-      const options = {
-        headless: process.env.KOMA_HEADLESS === "1",
-        viewport: { width: CAPTURE_WIDTH, height: CAPTURE_HEIGHT },
-        screen: { width: CAPTURE_WIDTH, height: CAPTURE_HEIGHT },
-        deviceScaleFactor: 1,
-        locale: "ja-JP",
-        args,
-        ignoreDefaultArgs: ignoredArgs(engine),
-      };
-      if (engine.channel) options.channel = engine.channel;
-      if (engine.executablePath && !engine.channel) options.executablePath = engine.executablePath;
+      let context;
       try {
-        this.context = await chromium.launchPersistentContext(userDataDir, options);
+        context = await launchChrome({
+          executable: engine.executablePath,
+          userDataDir,
+          profileArgs: buildLaunchArgs(profile),
+          headless: process.env.KOMA_HEADLESS === "1",
+          sandbox,
+        });
       } catch (error) {
         const text = String(error?.message || error);
         if (!sandbox && /sandbox|zygote|namespace/i.test(text)) {
@@ -250,23 +213,25 @@ export class BrowserManager {
         }
         throw explainLaunchError(error);
       }
-      this.context.on("close", () => {
+      context.on("close", () => {
+        if (this.context !== context) return;
         this.context = null;
         this.page = null;
         this.profileId = null;
       });
+      this.context = context;
       this.engineInfo = engine;
       this.profileId = profileId;
-      this.userDataDir = userDataDir;
+      this.userDataDir = context.userDataDir || userDataDir;
       this.sandboxFallback = sandbox || this.sandboxFallback;
-      this.version = this.context.browser()?.version() || null;
-      await this.context.addInitScript(() => {
+      this.version = context.browser()?.version() || null;
+      await context.addInitScript(() => {
         Object.defineProperty(Navigator.prototype, "webdriver", {
           configurable: true,
           get: () => undefined,
         });
       });
-      this.page = this.context.pages()[0] || await this.context.newPage();
+      this.page = context.pages()[0] || await context.newPage();
       this.bindPage(this.page);
       await this.prepareCurrentPage();
     } finally {
@@ -355,14 +320,6 @@ export class BrowserManager {
     this.userAgent = null;
     if (context) await context.close().catch(() => {});
   }
-}
-
-function ignoredArgs(engine) {
-  const ignored = ["--enable-automation"];
-  if (engine.key === "chrome") {
-    ignored.push("--disable-infobars", "--disable-edgeupdater", "--edge-skip-compat-layer-relaunch");
-  }
-  return ignored;
 }
 
 function pageHost(url) {

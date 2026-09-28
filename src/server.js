@@ -70,10 +70,65 @@ function readBody(req) {
 function safeFile(root, pathname) {
   const decoded = decodeURIComponent(pathname);
   const relative = decoded === "/" ? "index.html" : decoded.replace(/^\/+/, "");
+  if (isEmbedded(root)) {
+    const file = path.posix.normalize(path.posix.join(root, relative));
+    const prefix = root.endsWith("/") ? root : `${root}/`;
+    if (file !== root && !file.startsWith(prefix)) return null;
+    return file;
+  }
   const file = path.resolve(root, relative);
   const prefix = root.endsWith(path.sep) ? root : `${root}${path.sep}`;
   if (file !== root && !file.startsWith(prefix)) return null;
   return file;
+}
+
+function isEmbedded(file) {
+  return String(file).includes("$bunfs");
+}
+
+async function serveEmbedded(req, res, file) {
+  let data;
+  try {
+    data = await fsp.readFile(file);
+  } catch {
+    sendJson(res, { error: "見つかりません" }, 404);
+    return;
+  }
+  const type = TYPES[path.extname(file).toLowerCase()] || "application/octet-stream";
+  const range = req.headers.range;
+  if (range && data.length > 0) {
+    const match = /^bytes=(\d*)-(\d*)$/.exec(range);
+    if (!match || (match[1] === "" && match[2] === "")) {
+      res.writeHead(416, { "Content-Range": `bytes */${data.length}` });
+      res.end();
+      return;
+    }
+    let start = match[1] === "" ? Math.max(0, data.length - Number(match[2])) : Number(match[1]);
+    let end = match[2] === "" || match[1] === "" ? data.length - 1 : Number(match[2]);
+    if (Number.isNaN(start) || Number.isNaN(end) || start > end || start >= data.length) {
+      res.writeHead(416, { "Content-Range": `bytes */${data.length}` });
+      res.end();
+      return;
+    }
+    end = Math.min(end, data.length - 1);
+    const slice = data.subarray(start, end + 1);
+    res.writeHead(206, {
+      "Content-Type": type,
+      "Content-Length": slice.length,
+      "Content-Range": `bytes ${start}-${end}/${data.length}`,
+      "Accept-Ranges": "bytes",
+      "Cache-Control": "no-cache",
+    });
+    res.end(slice);
+    return;
+  }
+  res.writeHead(200, {
+    "Content-Type": type,
+    "Content-Length": data.length,
+    "Accept-Ranges": "bytes",
+    "Cache-Control": "no-cache",
+  });
+  res.end(data);
 }
 
 function serveFile(req, res, file) {
@@ -205,11 +260,6 @@ export function createApp({ manager, store, publicDir = PUBLIC_DIR }) {
         sendJson(res, await manager.status());
         return;
       }
-      if (req.method === "POST" && url.pathname === "/api/browser/install-chromium") {
-        const result = await manager.installChromium();
-        sendJson(res, result);
-        return;
-      }
       if (req.method === "GET" && url.pathname === "/api/captures") {
         sendJson(res, { files: await listCaptures(manager.capturesDir), directory: manager.capturesDir });
         return;
@@ -233,6 +283,10 @@ export function createApp({ manager, store, publicDir = PUBLIC_DIR }) {
         const file = safeFile(publicDir, url.pathname);
         if (!file) {
           sendJson(res, { error: "見つかりません" }, 404);
+          return;
+        }
+        if (isEmbedded(file)) {
+          await serveEmbedded(req, res, file);
           return;
         }
         serveFile(req, res, file);

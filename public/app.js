@@ -134,9 +134,9 @@ function renderStatus(status) {
   }
   if (status.url && document.activeElement !== urlInput) urlInput.value = status.url;
   if (status.chrome?.version) {
-    chromeLine.textContent = `このPCの Google Chrome は ${status.chrome.version} です。`;
+    chromeLine.textContent = `このPCの Google Chrome は ${status.chrome.version} です。普段のウィンドウとは別のユーザーデータで起動します。`;
   } else {
-    chromeLine.textContent = "このPCでは Google Chrome が見つかりません。Playwright Chromium を取得できます。";
+    chromeLine.textContent = "このPCでは Google Chrome が見つかりません。インストールするか、実行ファイルのパスを指定してください。";
   }
   if (status.lastError && !busy) showError(status.lastError);
   captureButton.disabled = busy || !status.browserOpen || status.capturing;
@@ -266,20 +266,6 @@ document.querySelector("#engine-form").addEventListener("submit", async (event) 
   config.engine = selected ? selected.value : "auto";
   config.executablePath = document.querySelector("#executable-path").value.trim();
   await saveConfig();
-});
-
-document.querySelector("#install-chromium").addEventListener("click", async () => {
-  busy = true;
-  showError("");
-  chromeLine.textContent = "Chromium を取得しています。回線によっては数分かかります。";
-  try {
-    await api("/api/browser/install-chromium", { method: "POST", body: "{}" });
-    chromeLine.textContent = "Playwright Chromium を取得しました。レンダラを Chromium にして保存すると使います。";
-  } catch (error) {
-    showError(error.message);
-  } finally {
-    busy = false;
-  }
 });
 
 document.querySelector("#rule-form").addEventListener("submit", async (event) => {

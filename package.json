@@ -6,13 +6,14 @@
   "description": "Treasure Finder。video要素を1920x1080のJPEGで残すデスクトップアプリ",
   "scripts": {
     "start": "node src/server.js",
+    "start:bun": "bun src/server.js",
     "test": "node --test",
-    "update-browser": "playwright install chromium"
+    "build": "bun build src/server.js --compile --asset ./public --outfile dist/treasure-finder",
+    "build:win": "bun build src/server.js --compile --asset ./public --target=bun-windows-x64 --outfile dist/treasure-finder-win",
+    "build:linux": "bun build src/server.js --compile --asset ./public --target=bun-linux-x64 --outfile dist/treasure-finder-linux",
+    "build:mac": "bun build src/server.js --compile --asset ./public --target=bun-darwin-arm64 --outfile dist/treasure-finder-mac"
   },
   "engines": {
     "node": ">=20"
-  },
-  "dependencies": {
-    "playwright": "^1.56.1"
   }
 }

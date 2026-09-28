@@ -59,19 +59,18 @@ function applyCaptureBox(element, metrics) {
   }
 }
 
-function restoreMarked(node) {
-  const previous = node.getAttribute("data-koma-style");
-  if (previous) node.setAttribute("style", previous);
-  else node.removeAttribute("style");
-  if (node instanceof HTMLVideoElement && node.hasAttribute("data-koma-controls")) {
-    node.controls = node.getAttribute("data-koma-controls") === "1";
-  }
-  node.removeAttribute("data-koma-style");
-  node.removeAttribute("data-koma-marked");
-  node.removeAttribute("data-koma-controls");
-}
-
 function revertCaptureBox(element) {
+  function restoreMarked(node) {
+    const previous = node.getAttribute("data-koma-style");
+    if (previous) node.setAttribute("style", previous);
+    else node.removeAttribute("style");
+    if (node instanceof HTMLVideoElement && node.hasAttribute("data-koma-controls")) {
+      node.controls = node.getAttribute("data-koma-controls") === "1";
+    }
+    node.removeAttribute("data-koma-style");
+    node.removeAttribute("data-koma-marked");
+    node.removeAttribute("data-koma-controls");
+  }
   const root = element.ownerDocument;
   if (!root) return;
   const seen = new Set();
@@ -92,7 +91,7 @@ function revertCaptureBox(element) {
 async function findBestVideo(page) {
   let best = null;
   let bestScore = -1;
-  for (const frame of page.frames()) {
+  for (const frame of await page.frames()) {
     let count = 0;
     try {
       count = await frame.locator("video").count();
