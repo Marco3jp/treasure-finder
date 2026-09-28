@@ -417,7 +417,11 @@ class ChromePage {
     this.offScreencast = this.app.cdp.on("Page.screencastFrame", (params, sessionId) => {
       if (sessionId !== this.sessionId) return;
       void this.app.cdp.send("Page.screencastFrameAck", { sessionId: params.sessionId }, this.sessionId).catch(() => {});
-      onFrame(Buffer.from(params.data, "base64"));
+      const meta = params.metadata || {};
+      onFrame(Buffer.from(params.data, "base64"), {
+        width: meta.deviceWidth,
+        height: meta.deviceHeight,
+      });
     });
     await this.app.cdp.send("Page.startScreencast", {
       format: "jpeg",

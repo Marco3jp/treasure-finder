@@ -1,6 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { captureVideoFrame } from "./capture.js";
+import { captureVideoFrame, findBestVideo } from "./capture.js";
 import { launchChrome } from "./chrome-app.js";
 import { CAPTURES_DIR, USER_DATA_ROOT } from "./config-store.js";
 import { resolveProfileId } from "./domain.js";
@@ -28,6 +28,35 @@ function createLock() {
   };
 }
 
+const LIVE_GRAB = { width: 640, height: 360, quality: 0.7 };
+const LIVE_VIDEO_MS = 100;
+const LIVE_PAGE_MS = 250;
+const LIVE_LOCATE_MS = 1500;
+const LIVE_LOAD_RETRIES = 12;
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// ページ側で実行される。読み込み中は loading を返し、再生位置が変わって
+// いなければ画像を作らない。映像を読み出せないときは null になる。
+function grabVideoFrame(video, options) {
+  if (video.readyState < 2 || !video.videoWidth) return { loading: true };
+  if (video.mediaKeys) return null;
+  if (options.after !== null && video.currentTime === options.after) return { time: video.currentTime };
+  const scale = Math.min(1, options.width / video.videoWidth, options.height / video.videoHeight);
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.max(1, Math.round(video.videoWidth * scale));
+  canvas.height = Math.max(1, Math.round(video.videoHeight * scale));
+  canvas.getContext("2d").drawImage(video, 0, 0, canvas.width, canvas.height);
+  try {
+    const url = canvas.toDataURL("image/jpeg", options.quality);
+    return { time: video.currentTime, data: url.slice(url.indexOf(",") + 1) };
+  } catch {
+    return null;
+  }
+}
+
 export class BrowserManager {
   constructor(store, options = {}) {
     this.store = store;
@@ -43,6 +72,10 @@ export class BrowserManager {
     this.liveViewers = new Set();
     this.livePage = null;
     this.liveFrame = null;
+    this.liveMode = null;
+    this.liveViewport = null;
+    this.liveTarget = null;
+    this.liveRun = Promise.resolve();
     this.liveChain = Promise.resolve();
     this.context = null;
     this.page = null;
@@ -93,6 +126,9 @@ export class BrowserManager {
       capturesDir: this.capturesDir,
       userDataDir: this.userDataDir,
       sandboxFallback: this.sandboxFallback,
+      live: this.livePage
+        ? { mode: this.liveMode, viewport: this.liveViewport, target: this.liveTarget }
+        : null,
       capture: {
         width: CAPTURE_WIDTH,
         height: CAPTURE_HEIGHT,
@@ -178,17 +214,95 @@ export class BrowserManager {
     const page = this.page && !this.page.isClosed() ? this.page : null;
     const wanted = this.liveViewers.size && !this.capturing ? page : null;
     if (wanted === this.livePage) return;
-    const previous = this.livePage;
     this.livePage = null;
+    await this.liveRun;
     this.liveFrame = null;
-    if (previous) await previous.stopScreencast();
+    this.liveMode = null;
+    this.liveViewport = null;
+    this.liveTarget = null;
     if (!wanted) return;
-    await wanted.startScreencast((frame) => {
-      if (this.livePage !== wanted) return;
-      this.liveFrame = frame;
-      for (const viewer of this.liveViewers) viewer(frame);
-    });
     this.livePage = wanted;
+    this.liveRun = this.runLive(wanted);
+  }
+
+  publishLive(frame) {
+    this.liveFrame = frame;
+    for (const viewer of this.liveViewers) viewer(frame);
+  }
+
+  // 撮影と同じ video の映像だけを canvas で縮小して流す。読み込み中は何回か
+  // 待ち直し、それでも映像を読み出せないページ（CORS のない別オリジンなど）
+  // では、screencast をその video の位置で切り抜く。
+  async runLive(page) {
+    const active = () => this.livePage === page && !page.isClosed();
+    let video = null;
+    let locatedAt = 0;
+    let tryVideo = false;
+    let lastTime = null;
+    let lastUrl = null;
+    let loadingTries = 0;
+    let screencasting = false;
+    try {
+      while (active()) {
+        if (Date.now() - locatedAt >= LIVE_LOCATE_MS) {
+          locatedAt = Date.now();
+          video = await findBestVideo(page).catch(() => null);
+          const box = video ? await video.locator.boundingBox().catch(() => null) : null;
+          this.liveTarget = box && box.width >= 1 && box.height >= 1 ? box : null;
+          tryVideo = Boolean(video);
+          if (page.url() !== lastUrl) {
+            lastUrl = page.url();
+            loadingTries = 0;
+          }
+        }
+        if (!video && loadingTries < LIVE_LOAD_RETRIES) {
+          // 読み込み直後は video がまだ候補にならないので、すぐ探し直す
+          loadingTries += 1;
+          locatedAt = 0;
+          if (!screencasting) this.liveMode = "loading";
+          await delay(LIVE_PAGE_MS);
+          continue;
+        }
+        const grabbed = tryVideo
+          ? await video.locator.evaluate(grabVideoFrame, { ...LIVE_GRAB, after: lastTime }).catch(() => null)
+          : null;
+        if (!active()) break;
+        if (grabbed?.loading && loadingTries < LIVE_LOAD_RETRIES) {
+          loadingTries += 1;
+          if (!screencasting) this.liveMode = "loading";
+          await delay(LIVE_PAGE_MS);
+          continue;
+        }
+        if (grabbed && !grabbed.loading) {
+          loadingTries = 0;
+          if (screencasting) {
+            screencasting = false;
+            await page.stopScreencast();
+          }
+          this.liveMode = "video";
+          lastTime = grabbed.time;
+          if (grabbed.data) this.publishLive(Buffer.from(grabbed.data, "base64"));
+          await delay(LIVE_VIDEO_MS);
+          continue;
+        }
+        tryVideo = false;
+        lastTime = null;
+        this.liveMode = "page";
+        if (!screencasting) {
+          screencasting = true;
+          await page.startScreencast((frame, viewport) => {
+            if (this.livePage !== page || this.liveMode !== "page") return;
+            if (viewport.width && viewport.height) this.liveViewport = viewport;
+            this.publishLive(frame);
+          }).catch(() => {
+            screencasting = false;
+          });
+        }
+        await delay(LIVE_PAGE_MS);
+      }
+    } finally {
+      if (screencasting) await page.stopScreencast();
+    }
   }
 
   syncWithConfig() {

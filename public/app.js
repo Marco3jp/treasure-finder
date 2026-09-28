@@ -17,11 +17,15 @@ const filmstrip = document.querySelector("#filmstrip");
 const captureButton = document.querySelector("#capture");
 const live = document.querySelector("#live");
 const liveEmpty = document.querySelector("#live-empty");
+const liveStage = document.querySelector("#live-stage");
+const liveMeta = document.querySelector("#live-meta");
+const liveNote = document.querySelector("#live-note");
 
 let config = null;
 let profiles = [];
 let busy = false;
 let browserOpen = false;
+let liveState = null;
 
 // 画面が見えていてブラウザが開いている間だけ、MJPEG を受け取る
 function connectLive() {
@@ -32,8 +36,34 @@ function connectLive() {
   if (!wanted && live.getAttribute("src")) live.removeAttribute("src");
 }
 
+// screencast はページ全体なので、撮影対象の video の範囲だけが枠に収まるよう拡大して切り抜く
+function placeLive() {
+  const viewport = liveState?.viewport;
+  if (liveState?.mode !== "page" || !viewport) {
+    live.removeAttribute("style");
+    return;
+  }
+  const box = liveState.target || { x: 0, y: 0, width: viewport.width, height: viewport.height };
+  const stageWidth = liveStage.clientWidth;
+  const stageHeight = liveStage.clientHeight;
+  const scale = Math.min(stageWidth / box.width, stageHeight / box.height);
+  const left = (stageWidth - box.width * scale) / 2 - box.x * scale;
+  const top = (stageHeight - box.height * scale) / 2 - box.y * scale;
+  const right = (viewport.width - box.x - box.width) * scale;
+  const bottom = (viewport.height - box.y - box.height) * scale;
+  Object.assign(live.style, {
+    width: `${viewport.width * scale}px`,
+    height: `${viewport.height * scale}px`,
+    left: `${left}px`,
+    top: `${top}px`,
+    clipPath: `inset(${box.y * scale}px ${right}px ${bottom}px ${box.x * scale}px)`,
+    objectFit: "fill",
+  });
+}
+
 live.addEventListener("error", () => live.removeAttribute("src"));
 document.addEventListener("visibilitychange", connectLive);
+window.addEventListener("resize", placeLive);
 
 function showError(message) {
   if (!message) {
@@ -132,6 +162,21 @@ function renderConfig() {
 function renderStatus(status) {
   browserOpen = status.browserOpen;
   connectLive();
+  liveState = status.live;
+  placeLive();
+  const mode = status.live?.mode;
+  const fallback = mode === "page";
+  liveMeta.textContent = {
+    video: "撮影される video の映像",
+    loading: "video を読み込んでいます",
+    page: status.live?.target ? "ページを video の位置で切り抜き" : "ページ全体",
+  }[mode] || "";
+  liveNote.hidden = !fallback;
+  if (fallback && status.live.target) {
+    liveNote.textContent = "video の映像を直接読み出せなかったので、ページの表示を video の位置で切り抜いています。操作ボタンや字幕が重なって見えることがあり、撮影結果とは見た目が違う場合があります。";
+  } else if (fallback) {
+    liveNote.textContent = "撮影できる video 要素を検出できていません。ページ全体を映しています。動画が再生されているか確認してください。";
+  }
   lamp.className = "lamp";
   if (status.capturing) lamp.classList.add("hot");
   else if (status.launching) lamp.classList.add("busy");
