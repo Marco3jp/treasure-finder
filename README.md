@@ -6,12 +6,39 @@
 
 ## 起動
 
+普段使っている Google Chrome を、別プロセス・別ユーザーデータで起動します。ホストに Node.js は要りません。配布物は Bun で作った単一実行ファイルです。
+
+Windows なら、ビルド済みの `treasure-finder-win.exe` を置くだけで動きます。Google Chrome が入っていることが前提です。
+
+```text
+treasure-finder-win.exe
+```
+
+起動すると、いつも使っているブラウザで <http://127.0.0.1:47321> が開きます。URL を入れて「開く」と、撮影用の Chrome がもう一つのウィンドウで起動します。動画が写っている状態で「この video を撮る」を押すと、実行ファイルと同じ場所の `data/captures/` に JPEG が保存されます。
+
+終了は、コンソールで Ctrl+C です。撮影用 Chrome も一緒に閉じます。
+
+データを別の場所に置きたいときは、`TREASURE_FINDER_HOME` にそのフォルダを指定します。`data/` はその中に作られます。
+
+### 単一実行ファイルを作る
+
+ビルドするマシンにだけ [Bun](https://bun.sh) が要ります。出来た実行ファイルを動かす側には、Bun も Node.js も要りません。
+
 ```bash
-npm install
+bun run build:win
+bun run build:mac
+bun run build:linux
+```
+
+成果物は `dist/` に出ます。Windows 向けは `dist/treasure-finder-win.exe` です。クロスコンパイルできるので、Windows 以外からでも Windows 用を作れます。
+
+### ソースから動かす
+
+```bash
 npm start
 ```
 
-ブラウザで <http://127.0.0.1:47321> が開きます。URL を入れて「開く」と、撮影用の Chrome が別ウィンドウで起動します。動画が写っている状態で「この video を撮る」を押すと、`data/captures/` に JPEG が保存されます。
+Bun があるなら `bun src/server.js` でも同じです。このときはリポジトリ直下の `data/` を使います。
 
 動作確認用のカラーバーは、パネルの「サンプル」からです。
 
@@ -24,9 +51,14 @@ npm start
 | Tauri / システムの WebView | 起動は軽い。ただし Windows は WebView2、macOS は WKWebView、Linux は WebKitGTK で、動画の写り方も GPU を切るフラグも揃わない |
 | WebView2 | レンダラは優秀だが Windows 専用 |
 | Electron / CEF / Qt WebEngine | 描画エンジンをアプリに同梱するので、更新のたびにアプリ本体の配布が必要になる |
-| 採用: Node.js + Playwright で Google Chrome を起動 | 撮影側は Win / Mac / Linux とも Chromium 系。Chrome が入っていればその自動更新がレンダラの更新になる |
+| Node.js + Playwright | 撮影側は Chromium 系に揃う。ただし実行する PC に Node.js と依存パッケージが要る |
+| 採用: Bun の単一実行ファイルから、入っている Google Chrome を起動 | 実行ファイルひとつで起動できる。レンダラの更新は Chrome 自身の自動更新に任せられる |
 
-Chrome が無い PC では、Playwright が配る Chromium に切り替えられます。取得はパネルの「Chromiumを取得」、または `npm run update-browser` です。Chromium の版を上げるときは `playwright` パッケージを更新してから、同じコマンドを再実行します。実行ファイルのパスを直接指定することもできます。
+Chrome のハードウェアアクセラレーションは、プロセスを起動したときの引数で決まります。既に開いている Chrome の中のスレッドとして、別の GPU 設定だけを足すことはできません。その代わり、普段の Chrome とは別の `--user-data-dir` で別プロセスを起動します。普段のウィンドウを開いたままでも、プロファイルのロックではぶつかりません。
+
+ログイン、Cookie、localStorage は、その専用ディレクトリ（`data/user-data/`）に残ります。起動方法を切り替えてブラウザを開き直しても、同じ実行ファイルなら保存先は変わりません。
+
+実行ファイルのパスを直接指定することもできます。Google Chrome 以外の Chromium 系を指したときだけ、User-Agent を同じ版番号のデスクトップ Chrome に寄せます。
 
 ## ドメインごとの起動方法
 
@@ -34,9 +66,7 @@ Chrome が無い PC では、Playwright が配る Chromium に切り替えられ
 
 `example.com` は `www.example.com` や `video.example.com` にも効きます。より長いホスト名を個別に登録した方が優先されます。
 
-Cookie、ログイン状態、localStorage はアプリ専用のプロファイル（`data/user-data/`）に残ります。起動方法を切り替えても、同じレンダラなら保存先は変わりません。普段使いの Chrome プロファイルとは分けてあるので、Chrome を起動したままでもプロファイルのロックでぶつかりません。
-
-Google Chrome と Playwright Chromium を切り替えたときだけ、プロファイルのディレクトリは別になります。バイナリが違う状態で同じユーザーデータを共有しないためです。
+Google Chrome と、パスを指定した別バイナリでは、ユーザーデータのディレクトリを分けます。バイナリが違う状態で同じユーザーデータを共有しないためです。
 
 ## 撮影
 
@@ -44,7 +74,7 @@ Google Chrome と Playwright Chromium を切り替えたときだけ、プロフ
 - 写っている `video` のうち、再生中で映像サイズがいちばん大きいものを選びます。iframe の中にあれば、枠ごと 1920×1080 に広げてから撮ります。
 - 映像は要素いっぱいに収めます（`object-fit: contain`）。16:9 以外は上下か左右に黒帯が付きます。
 - JPEG 品質は 90 です。
-- User-Agent は、Google Chrome を使っているときはその Chrome 自身のデスクトップ UA です。Chromium に落としたときだけ、同じ版番号のデスクトップ Chrome に寄せた UA と Client Hints を足します。
+- User-Agent は、Google Chrome を使っているときはその Chrome 自身のデスクトップ UA です。別バイナリに切り替えたときだけ、同じ版番号のデスクトップ Chrome に寄せた UA と Client Hints を足します。
 
 DRM の映像は、アクセラレーションを切っても黒いままです。
 

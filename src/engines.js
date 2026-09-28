@@ -49,6 +49,15 @@ export function readChromeVersion(executable) {
   });
 }
 
+function chromeEngine(chromePath) {
+  return {
+    key: "chrome",
+    label: "Google Chrome",
+    executablePath: chromePath,
+    overrideUa: false,
+  };
+}
+
 export async function resolveEngine(config) {
   const chromePath = findSystemChrome();
   if (config.engine === "custom") {
@@ -62,50 +71,25 @@ export async function resolveEngine(config) {
       overrideUa: true,
     };
   }
-  if (config.engine === "chromium") {
-    return {
-      key: "chromium",
-      label: "Playwright Chromium",
-      overrideUa: true,
-    };
-  }
-  if (config.engine === "chrome") {
+  if (config.engine === "chrome" || config.engine === "auto" || config.engine === "chromium" || !config.engine) {
     if (!chromePath) {
-      throw new AppError("Google Chrome が見つかりません", 400, "NO_CHROME");
+      throw new AppError(
+        "Google Chrome が見つかりません。インストールするか、実行ファイルのパスを指定してください。",
+        400,
+        "NO_CHROME",
+      );
     }
-    return {
-      key: "chrome",
-      label: "Google Chrome",
-      channel: "chrome",
-      executablePath: chromePath,
-      overrideUa: false,
-    };
+    return chromeEngine(chromePath);
   }
-  if (chromePath) {
-    return {
-      key: "chrome",
-      label: "Google Chrome",
-      channel: "chrome",
-      executablePath: chromePath,
-      overrideUa: false,
-    };
-  }
-  return {
-    key: "chromium",
-    label: "Playwright Chromium",
-    overrideUa: true,
-  };
+  if (chromePath) return chromeEngine(chromePath);
+  throw new AppError(
+    "Google Chrome が見つかりません。インストールするか、実行ファイルのパスを指定してください。",
+    400,
+    "NO_CHROME",
+  );
 }
 
 export function explainLaunchError(error) {
   if (error instanceof AppError) return error;
-  const text = String(error?.message || error);
-  if (/Executable doesn't exist|playwright install/i.test(text)) {
-    return new AppError(
-      "Playwright Chromium がまだありません。操作パネルの「Chromiumを取得」か、npm run update-browser を実行してください。",
-      500,
-      "NO_BROWSER",
-    );
-  }
-  return new AppError(text, 500, "LAUNCH_FAILED");
+  return new AppError(String(error?.message || error), 500, "LAUNCH_FAILED");
 }

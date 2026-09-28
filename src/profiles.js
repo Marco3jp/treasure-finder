@@ -101,9 +101,11 @@ function cleanArgs(args) {
 export function sanitizeConfig(input) {
   const base = defaultConfig();
   const source = input && typeof input === "object" ? input : {};
-  const engine = ["auto", "chrome", "chromium", "custom"].includes(source.engine)
-    ? source.engine
-    : "auto";
+  const engine = source.engine === "chromium"
+    ? "auto"
+    : ["auto", "chrome", "custom"].includes(source.engine)
+      ? source.engine
+      : "auto";
 
   const customProfiles = [];
   const seen = new Set(BUILTIN_PROFILES.map((profile) => profile.id));
