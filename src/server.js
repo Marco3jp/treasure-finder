@@ -253,7 +253,7 @@ export function startServer({ port = PORT, host = HOST, open = true } = {}) {
   server.requestTimeout = 0;
   server.listen(port, host, () => {
     const address = `http://${host}:${port}`;
-    console.log(`Koma  ${address}`);
+    console.log(`Treasure Finder  ${address}`);
     if (open && process.env.KOMA_NO_OPEN !== "1") openPath(address);
   });
   const shutdown = async () => {
