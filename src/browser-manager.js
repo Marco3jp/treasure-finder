@@ -337,7 +337,7 @@ export class BrowserManager {
           executable: engine.executablePath,
           userDataDir,
           profileArgs: buildLaunchArgs(profile),
-          headless: process.env.KOMA_HEADLESS === "1",
+          headless: process.env.TREASURE_FINDER_HEADLESS === "1",
           sandbox,
         });
       } catch (error) {
@@ -408,17 +408,10 @@ export class BrowserManager {
   async prepareCurrentPage() {
     const page = await this.currentPage();
     if (!page) return;
-    await page.setViewportSize({ width: CAPTURE_WIDTH, height: CAPTURE_HEIGHT }).catch(() => {});
+    // 普段はウィンドウの大きさのまま表示する。1920×1080 に固定するのは撮影中だけ
+    await page.clearViewportSize().catch(() => {});
     const client = await page.context().newCDPSession(page);
     try {
-      await client.send("Emulation.setDeviceMetricsOverride", {
-        width: CAPTURE_WIDTH,
-        height: CAPTURE_HEIGHT,
-        deviceScaleFactor: 1,
-        mobile: false,
-        screenWidth: CAPTURE_WIDTH,
-        screenHeight: CAPTURE_HEIGHT,
-      });
       if (this.engineInfo?.overrideUa && this.version) {
         await client.send(
           "Network.setUserAgentOverride",

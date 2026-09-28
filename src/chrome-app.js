@@ -448,6 +448,11 @@ class ChromePage {
       screenHeight: height,
     }, this.sessionId);
   }
+
+  async clearViewportSize() {
+    if (this.isClosed()) return;
+    await this.app.cdp.send("Emulation.clearDeviceMetricsOverride", {}, this.sessionId);
+  }
 }
 
 class ChromeContext {
