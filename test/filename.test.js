@@ -34,5 +34,5 @@ test("戦略を登録するとドメインルールから呼べる", async () =>
     hostname: "example.com",
     now: new Date(),
   });
-  assert.equal(result, { filename: "opening.jpg", strategy: "title" });
+  assert.deepEqual(result, { filename: "opening.jpg", strategy: "title" });
 });

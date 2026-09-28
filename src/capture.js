@@ -125,7 +125,7 @@ async function findBestVideo(page) {
       const score = info.area + (info.playing ? 1_000_000_000_000 : 0);
       if (score > bestScore) {
         bestScore = score;
-        best = locator;
+        best = { locator, frame };
       }
     }
   }
@@ -148,8 +148,8 @@ async function expandFrameChain(frame) {
   return chain;
 }
 
-async function restoreFrameChain(chain, video) {
-  if (video) await video.evaluate(revertCaptureBox).catch(() => {});
+async function restoreFrameChain(chain, locator) {
+  if (locator) await locator.evaluate(revertCaptureBox).catch(() => {});
   for (const element of [...chain].reverse()) {
     await element.evaluate(revertCaptureBox).catch(() => {});
   }
@@ -231,11 +231,11 @@ export async function captureVideoFrame(page) {
   try {
     const frames = await expandFrameChain(video.frame);
     chain.push(...frames);
-    await video.evaluate(applyCaptureBox, METRICS);
-    await waitForPresentedFrame(video);
-    let buffer = await screenshotElement(video);
+    await video.locator.evaluate(applyCaptureBox, METRICS);
+    await waitForPresentedFrame(video.locator);
+    let buffer = await screenshotElement(video.locator);
     if (!isExactFrame(buffer)) {
-      const box = await video.boundingBox();
+      const box = await video.locator.boundingBox();
       if (box) buffer = await screenshotClip(page, box);
     }
     if (!isExactFrame(buffer)) {
@@ -248,6 +248,6 @@ export async function captureVideoFrame(page) {
     }
     return buffer;
   } finally {
-    await restoreFrameChain(chain, video);
+    await restoreFrameChain(chain, video.locator);
   }
 }

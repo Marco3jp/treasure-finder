@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { readdirSync, readFileSync } from "node:fs";
 import fs from "node:fs/promises";
 import http from "node:http";
 import os from "node:os";
@@ -112,6 +113,23 @@ async function makeClip(directory) {
   return file;
 }
 
+function browserCommandLine(userDataDir) {
+  const hits = [];
+  for (const pid of readdirSync("/proc")) {
+    if (!/^\d+$/.test(pid)) continue;
+    let text = "";
+    try {
+      text = readFileSync(`/proc/${pid}/cmdline`).toString("utf8").replaceAll("\0", " ");
+    } catch {
+      continue;
+    }
+    if (text.includes(userDataDir)) hits.push(text);
+  }
+  const main = hits.find((line) => line.includes("--user-data-dir") && !line.includes("--type="));
+  if (!main) throw new Error("撮影用ブラウザのプロセスが見つかりません");
+  return main;
+}
+
 test("video要素を画面サイズと無関係に1920x1080で残し、Cookieと起動方法を保つ", { timeout: 180000 }, async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "koma-capture-"));
   const store = new ConfigStore(path.join(root, "config.json"));
@@ -136,9 +154,11 @@ test("video要素を画面サイズと無関係に1920x1080で残し、Cookieと
     assert.match(metrics.ua, /Chrome\/\d+/);
     assert.doesNotMatch(metrics.ua, /HeadlessChrome/);
 
-    await page.evaluate(() => {
-      document.cookie = "koma_kept=yes; path=/";
+    const planted = await page.evaluate(() => {
+      document.cookie = "koma_kept=yes; path=/; max-age=31536000";
+      return document.cookie;
     });
+    assert.match(planted, /koma_kept=yes/);
     const shot = await manager.capture();
     const saved = path.join(root, "captures", shot.file);
     const size = jpegSize(await fs.readFile(saved));
@@ -150,8 +170,8 @@ test("video要素を画面サイズと無関係に1920x1080で残し、Cookieと
     config.domainProfiles.localhost = "no-gpu";
     await store.save(config);
     await manager.navigate(`http://localhost:${fixture.port}/frame`);
-    const args = manager.context.browser().process().spawnargs;
-    assert.ok(args.includes("--disable-gpu"));
+    const noGpu = browserCommandLine(manager.userDataDir);
+    assert.match(noGpu, /--disable-gpu/);
     assert.equal(manager.profileId, "no-gpu");
     const framed = await manager.capture();
     const framedSize = jpegSize(await fs.readFile(path.join(root, "captures", framed.file)));
@@ -163,7 +183,7 @@ test("video要素を画面サイズと無関係に1920x1080で残し、Cookieと
     const cookie = await manager.currentPage().then((open) => open.evaluate(() => document.cookie));
     assert.match(cookie, /koma_kept=yes/);
     assert.equal(manager.profileId, "default");
-    assert.equal(manager.context.browser().process().spawnargs.includes("--disable-gpu"), false);
+    assert.doesNotMatch(browserCommandLine(manager.userDataDir), /--disable-gpu/);
   } finally {
     await manager.close();
     await new Promise((resolve) => fixture.server.close(resolve));

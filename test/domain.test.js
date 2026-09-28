@@ -15,6 +15,7 @@ test("ドメインはサブドメインより長い一致より、登録その�
 test("URLとドメインの表記を揃える", () => {
   assert.equal(normalizeUrl("example.com/watch"), "https://example.com/watch");
   assert.equal(hostFromInput("HTTPS://WWW.Example.com/a"), "www.example.com");
+  assert.equal(hostFromInput("localhost"), "localhost");
   assert.throws(() => normalizeUrl("file:///tmp/a"), /http/);
-  assert.throws(() => hostFromInput("localhost"), /example\.com/);
+  assert.throws(() => hostFromInput("bad_host"), /example\.com/);
 });
