@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <title>Koma サンプル（iframe）</title>
+  <style>
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      background: #12343b;
+      color: #f4efe6;
+      font-family: "Hiragino Sans", "Noto Sans JP", sans-serif;
+    }
+    iframe {
+      width: 320px;
+      height: 180px;
+      border: 8px solid #f4efe6;
+      background: #000;
+    }
+    p { margin-top: 16px; }
+  </style>
+</head>
+<body>
+  <div>
+    <iframe src="/sample.html" title="埋め込みの動画"></iframe>
+    <p>iframe の中の video も、枠ごと広げて撮ります。</p>
+  </div>
+</body>
+</html>

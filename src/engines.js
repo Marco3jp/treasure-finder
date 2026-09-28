@@ -1,0 +1,111 @@
+import { execFile } from "node:child_process";
+import { accessSync, constants } from "node:fs";
+import path from "node:path";
+import { AppError } from "./errors.js";
+
+function canExecute(file) {
+  try {
+    accessSync(file, constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function findSystemChrome() {
+  const candidates = [];
+  if (process.env.CHROME_PATH) candidates.push(process.env.CHROME_PATH);
+  if (process.platform === "darwin") {
+    candidates.push("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome");
+  } else if (process.platform === "win32") {
+    const roots = [
+      process.env.PROGRAMFILES,
+      process.env["PROGRAMFILES(X86)"],
+      process.env.LOCALAPPDATA,
+    ].filter(Boolean);
+    for (const root of roots) {
+      candidates.push(path.join(root, "Google", "Chrome", "Application", "chrome.exe"));
+    }
+  } else {
+    candidates.push(
+      "/usr/bin/google-chrome-stable",
+      "/usr/bin/google-chrome",
+      "/usr/local/bin/google-chrome",
+    );
+  }
+  return candidates.find((candidate) => candidate && canExecute(candidate)) || null;
+}
+
+export function readChromeVersion(executable) {
+  return new Promise((resolve) => {
+    execFile(executable, ["--version"], { timeout: 5000 }, (error, stdout) => {
+      if (error) {
+        resolve(null);
+        return;
+      }
+      const match = /(\d+\.\d+\.\d+\.\d+)/.exec(stdout);
+      resolve(match ? match[1] : stdout.trim());
+    });
+  });
+}
+
+export async function resolveEngine(config) {
+  const chromePath = findSystemChrome();
+  if (config.engine === "custom") {
+    if (!config.executablePath) {
+      throw new AppError("実行ファイルのパスを入れてください", 400, "NO_ENGINE");
+    }
+    return {
+      key: "custom",
+      label: "指定した実行ファイル",
+      executablePath: config.executablePath,
+      overrideUa: true,
+    };
+  }
+  if (config.engine === "chromium") {
+    return {
+      key: "chromium",
+      label: "Playwright Chromium",
+      overrideUa: true,
+    };
+  }
+  if (config.engine === "chrome") {
+    if (!chromePath) {
+      throw new AppError("Google Chrome が見つかりません", 400, "NO_CHROME");
+    }
+    return {
+      key: "chrome",
+      label: "Google Chrome",
+      channel: "chrome",
+      executablePath: chromePath,
+      overrideUa: false,
+    };
+  }
+  if (chromePath) {
+    return {
+      key: "chrome",
+      label: "Google Chrome",
+      channel: "chrome",
+      executablePath: chromePath,
+      overrideUa: false,
+    };
+  }
+  return {
+    key: "chromium",
+    label: "Playwright Chromium",
+    overrideUa: true,
+  };
+}
+
+export function explainLaunchError(error) {
+  if (error instanceof AppError) return error;
+  const text = String(error?.message || error);
+  if (/Executable doesn't exist|playwright install/i.test(text)) {
+    return new AppError(
+      "Playwright Chromium がまだありません。操作パネルの「Chromiumを取得」か、npm run update-browser を実行してください。",
+      500,
+      "NO_BROWSER",
+    );
+  }
+  return new AppError(text, 500, "LAUNCH_FAILED");
+}
