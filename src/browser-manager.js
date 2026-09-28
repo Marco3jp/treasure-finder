@@ -235,7 +235,7 @@ export class BrowserManager {
         deviceScaleFactor: 1,
         locale: "ja-JP",
         args,
-        ignoreDefaultArgs: ["--enable-automation"],
+        ignoreDefaultArgs: ignoredArgs(engine),
       };
       if (engine.channel) options.channel = engine.channel;
       if (engine.executablePath && !engine.channel) options.executablePath = engine.executablePath;
@@ -355,6 +355,14 @@ export class BrowserManager {
     this.userAgent = null;
     if (context) await context.close().catch(() => {});
   }
+}
+
+function ignoredArgs(engine) {
+  const ignored = ["--enable-automation"];
+  if (engine.key === "chrome") {
+    ignored.push("--disable-infobars", "--disable-edgeupdater", "--edge-skip-compat-layer-relaunch");
+  }
+  return ignored;
 }
 
 function pageHost(url) {
