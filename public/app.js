@@ -133,8 +133,8 @@ function renderStatus(status) {
     domainLine.textContent = "ドメインごとの起動方法は、そのドメインを開いたときに切り替わります。";
   }
   if (status.url && document.activeElement !== urlInput) urlInput.value = status.url;
-  if (status.chrome?.version) {
-    chromeLine.textContent = `このPCの Google Chrome は ${status.chrome.version} です。普段のウィンドウとは別のユーザーデータで起動します。`;
+  if (status.chrome?.path) {
+    chromeLine.textContent = "このPCの Google Chrome を、普段のウィンドウとは別のユーザーデータで起動します。";
   } else {
     chromeLine.textContent = "このPCでは Google Chrome が見つかりません。インストールするか、実行ファイルのパスを指定してください。";
   }

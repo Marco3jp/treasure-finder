@@ -1,4 +1,3 @@
-import { execFile } from "node:child_process";
 import { accessSync, constants } from "node:fs";
 import path from "node:path";
 import { AppError } from "./errors.js";
@@ -34,19 +33,6 @@ export function findSystemChrome() {
     );
   }
   return candidates.find((candidate) => candidate && canExecute(candidate)) || null;
-}
-
-export function readChromeVersion(executable) {
-  return new Promise((resolve) => {
-    execFile(executable, ["--version"], { timeout: 5000 }, (error, stdout) => {
-      if (error) {
-        resolve(null);
-        return;
-      }
-      const match = /(\d+\.\d+\.\d+\.\d+)/.exec(stdout);
-      resolve(match ? match[1] : stdout.trim());
-    });
-  });
 }
 
 function chromeEngine(chromePath) {

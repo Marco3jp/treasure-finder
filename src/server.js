@@ -4,7 +4,7 @@ import http from "node:http";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { BrowserManager, installedChromeVersion } from "./browser-manager.js";
+import { BrowserManager, installedChrome } from "./browser-manager.js";
 import {
   CAPTURES_DIR,
   ConfigStore,
@@ -226,13 +226,12 @@ export function createApp({ manager, store, publicDir = PUBLIC_DIR }) {
     try {
       const url = new URL(req.url || "/", `http://${HOST}`);
       if (req.method === "GET" && url.pathname === "/api/status") {
-        const [status, chrome] = await Promise.all([manager.status(), installedChromeVersion()]);
-        sendJson(res, { ...status, chrome });
+        sendJson(res, { ...(await manager.status()), chrome: installedChrome() });
         return;
       }
       if (req.method === "GET" && url.pathname === "/api/config") {
         const config = await store.load();
-        const chrome = await installedChromeVersion();
+        const chrome = installedChrome();
         sendJson(res, { config, profiles: allProfiles(config), chrome });
         return;
       }

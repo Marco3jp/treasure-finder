@@ -5,7 +5,7 @@ import { launchChrome } from "./chrome-app.js";
 import { CAPTURES_DIR, USER_DATA_ROOT } from "./config-store.js";
 import { resolveProfileId } from "./domain.js";
 import { AppError } from "./errors.js";
-import { explainLaunchError, findSystemChrome, readChromeVersion, resolveEngine } from "./engines.js";
+import { explainLaunchError, findSystemChrome, resolveEngine } from "./engines.js";
 import { buildFilename } from "./filename.js";
 import { jpegSize } from "./jpeg.js";
 import {
@@ -346,16 +346,7 @@ async function uniqueName(directory, filename) {
   }
 }
 
-let chromeCache = { at: 0, value: null };
-
-export async function installedChromeVersion() {
-  if (Date.now() - chromeCache.at < 30_000) return chromeCache.value;
+export function installedChrome() {
   const executable = findSystemChrome();
-  chromeCache = {
-    at: Date.now(),
-    value: executable
-      ? { path: executable, version: await readChromeVersion(executable) }
-      : null,
-  };
-  return chromeCache.value;
+  return executable ? { path: executable } : null;
 }
