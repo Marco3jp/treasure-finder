@@ -56,7 +56,7 @@ textarea { resize: vertical; }
   clip: rect(0 0 0 0);
 }
 
-.top, .transport, main {
+.top, .transport, main, .foot {
   width: min(1120px, calc(100% - 32px));
   margin-inline: auto;
 }
@@ -103,11 +103,10 @@ h2 { margin: 1.6rem 0 0.4rem; font-size: 1.35rem; }
 
 .transport { margin-top: 18px; }
 
-.url-row, .action-row, .rule-row, .cluster { display: flex; gap: 8px; }
+.url-row, .rule-row, .cluster { display: flex; gap: 8px; }
 
 .url-row input { flex: 1; }
 
-.action-row { margin-top: 10px; justify-content: space-between; align-items: center; }
 
 .capture {
   background: var(--tally);
@@ -133,8 +132,12 @@ main {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(320px, 0.9fr);
   gap: 18px;
-  padding: 18px 0 40px;
+  padding: 18px 0;
 }
+
+.side { display: grid; gap: 18px; align-content: start; }
+
+.foot { padding: 0 0 40px; }
 
 .sheet {
   background: rgba(36, 31, 26, 0.92);
@@ -190,6 +193,10 @@ pre {
 
 .advanced summary { cursor: pointer; color: var(--brass); }
 
+.advanced h3 { margin: 1rem 0 0.5rem; font-size: 1rem; font-weight: 600; }
+
+.stage-actions { display: flex; justify-content: flex-end; margin-top: 10px; }
+
 .stage {
   margin-top: 12px;
   aspect-ratio: 16 / 9;
@@ -219,7 +226,7 @@ pre {
 .filmstrip img { display: block; width: 100%; height: 63px; object-fit: cover; }
 
 @media (max-width: 860px) {
-  .top, .action-row, .identity, .brand { flex-direction: column; align-items: stretch; }
+  .top, .identity, .brand { flex-direction: column; align-items: stretch; }
   .identity { text-align: left; align-items: flex-start; }
   main { grid-template-columns: 1fr; }
   .url-row, .rule-row, .cluster { flex-direction: column; }

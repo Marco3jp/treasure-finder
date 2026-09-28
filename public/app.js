@@ -15,10 +15,25 @@ const stageEmpty = document.querySelector("#stage-empty");
 const shotMeta = document.querySelector("#shot-meta");
 const filmstrip = document.querySelector("#filmstrip");
 const captureButton = document.querySelector("#capture");
+const live = document.querySelector("#live");
+const liveEmpty = document.querySelector("#live-empty");
 
 let config = null;
 let profiles = [];
 let busy = false;
+let browserOpen = false;
+
+// 画面が見えていてブラウザが開いている間だけ、MJPEG を受け取る
+function connectLive() {
+  const wanted = browserOpen && document.visibilityState === "visible";
+  live.hidden = !browserOpen;
+  liveEmpty.hidden = browserOpen;
+  if (wanted && !live.getAttribute("src")) live.src = `/api/live?t=${Date.now()}`;
+  if (!wanted && live.getAttribute("src")) live.removeAttribute("src");
+}
+
+live.addEventListener("error", () => live.removeAttribute("src"));
+document.addEventListener("visibilitychange", connectLive);
 
 function showError(message) {
   if (!message) {
@@ -115,6 +130,8 @@ function renderConfig() {
 }
 
 function renderStatus(status) {
+  browserOpen = status.browserOpen;
+  connectLive();
   lamp.className = "lamp";
   if (status.capturing) lamp.classList.add("hot");
   else if (status.launching) lamp.classList.add("busy");
@@ -225,18 +242,6 @@ document.querySelector("#nav-form").addEventListener("submit", async (event) => 
     await refresh();
   }
 });
-
-for (const [id, path] of [["back", "/api/back"], ["forward", "/api/forward"], ["reload", "/api/reload"]]) {
-  document.querySelector(`#${id}`).addEventListener("click", async () => {
-    showError("");
-    try {
-      await api(path, { method: "POST", body: "{}" });
-    } catch (error) {
-      showError(error.message);
-    }
-    await refresh();
-  });
-}
 
 document.querySelector("#sample").addEventListener("click", () => {
   urlInput.value = `${location.origin}/sample.html`;

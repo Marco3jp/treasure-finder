@@ -33,7 +33,17 @@ export class BrowserManager {
     this.store = store;
     this.userDataRoot = options.userDataRoot || USER_DATA_ROOT;
     this.capturesDir = options.capturesDir || CAPTURES_DIR;
-    this.exclusive = createLock();
+    const lock = createLock();
+    // 操作が終わるたびに、ライブプレビューを今のページへ付け直す
+    this.exclusive = (task) => {
+      const result = lock(task);
+      result.then(() => this.refreshLive(), () => this.refreshLive());
+      return result;
+    };
+    this.liveViewers = new Set();
+    this.livePage = null;
+    this.liveFrame = null;
+    this.liveChain = Promise.resolve();
     this.context = null;
     this.page = null;
     this.boundPages = new WeakSet();
@@ -110,32 +120,12 @@ export class BrowserManager {
     });
   }
 
-  back() {
-    return this.exclusive(async () => {
-      const page = await this.requirePage();
-      await page.goBack({ waitUntil: "domcontentloaded", timeout: 45000 }).catch(() => {});
-    });
-  }
-
-  forward() {
-    return this.exclusive(async () => {
-      const page = await this.requirePage();
-      await page.goForward({ waitUntil: "domcontentloaded", timeout: 45000 }).catch(() => {});
-    });
-  }
-
-  reload() {
-    return this.exclusive(async () => {
-      const page = await this.requirePage();
-      await page.reload({ waitUntil: "domcontentloaded", timeout: 45000 });
-    });
-  }
-
   capture() {
     return this.exclusive(async () => {
       const page = await this.requirePage();
       this.capturing = true;
       this.suspendProfileSync = true;
+      await this.refreshLive();
       try {
         await this.prepareCurrentPage();
         const buffer = await captureVideoFrame(page);
@@ -167,6 +157,38 @@ export class BrowserManager {
         this.suspendProfileSync = false;
       }
     });
+  }
+
+  addLiveViewer(onFrame) {
+    this.liveViewers.add(onFrame);
+    if (this.liveFrame) onFrame(this.liveFrame);
+    void this.refreshLive();
+    return () => {
+      this.liveViewers.delete(onFrame);
+      void this.refreshLive();
+    };
+  }
+
+  refreshLive() {
+    this.liveChain = this.liveChain.then(() => this.applyLive()).catch(() => {});
+    return this.liveChain;
+  }
+
+  async applyLive() {
+    const page = this.page && !this.page.isClosed() ? this.page : null;
+    const wanted = this.liveViewers.size && !this.capturing ? page : null;
+    if (wanted === this.livePage) return;
+    const previous = this.livePage;
+    this.livePage = null;
+    this.liveFrame = null;
+    if (previous) await previous.stopScreencast();
+    if (!wanted) return;
+    await wanted.startScreencast((frame) => {
+      if (this.livePage !== wanted) return;
+      this.liveFrame = frame;
+      for (const viewer of this.liveViewers) viewer(frame);
+    });
+    this.livePage = wanted;
   }
 
   syncWithConfig() {
@@ -218,6 +240,7 @@ export class BrowserManager {
         this.context = null;
         this.page = null;
         this.profileId = null;
+        void this.refreshLive();
       });
       this.context = context;
       this.engineInfo = engine;
@@ -249,6 +272,7 @@ export class BrowserManager {
     });
     page.on("close", () => {
       if (this.page === page) this.page = null;
+      void this.refreshLive();
     });
   }
 

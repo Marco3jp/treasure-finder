@@ -292,6 +292,7 @@ class ChromePage {
     this.mainFrameId = null;
     this.mainFrameToken = { id: "main" };
     this.events = createEmitter();
+    this.offScreencast = null;
   }
 
   on(event, handler) {
@@ -411,41 +412,26 @@ class ChromePage {
     }
   }
 
-  async goBack(options = {}) {
-    await this.travel(-1, options.timeout ?? 45000);
+  async startScreencast(onFrame, { width = 960, height = 540, quality = 60 } = {}) {
+    this.offScreencast?.();
+    this.offScreencast = this.app.cdp.on("Page.screencastFrame", (params, sessionId) => {
+      if (sessionId !== this.sessionId) return;
+      void this.app.cdp.send("Page.screencastFrameAck", { sessionId: params.sessionId }, this.sessionId).catch(() => {});
+      onFrame(Buffer.from(params.data, "base64"));
+    });
+    await this.app.cdp.send("Page.startScreencast", {
+      format: "jpeg",
+      quality,
+      maxWidth: width,
+      maxHeight: height,
+    }, this.sessionId);
   }
 
-  async goForward(options = {}) {
-    await this.travel(1, options.timeout ?? 45000);
-  }
-
-  async travel(direction, timeout) {
-    const history = await this.app.cdp.send("Page.getNavigationHistory", {}, this.sessionId);
-    const index = (history.currentIndex ?? 0) + direction;
-    const entry = history.entries?.[index];
-    if (!entry) return;
-    const pending = this.waitForLoad(timeout);
-    try {
-      await this.app.cdp.send("Page.navigateToHistoryEntry", { entryId: entry.id }, this.sessionId);
-      await pending.promise;
-      await this.refreshMainFrame();
-    } catch (error) {
-      pending.cancel();
-      throw error;
-    }
-  }
-
-  async reload(options = {}) {
-    const timeout = options.timeout ?? 45000;
-    const pending = this.waitForLoad(timeout);
-    try {
-      await this.app.cdp.send("Page.reload", {}, this.sessionId);
-      await pending.promise;
-      await this.refreshMainFrame();
-    } catch (error) {
-      pending.cancel();
-      throw error;
-    }
+  async stopScreencast() {
+    this.offScreencast?.();
+    this.offScreencast = null;
+    if (this.isClosed()) return;
+    await this.app.cdp.send("Page.stopScreencast", {}, this.sessionId).catch(() => {});
   }
 
   async setViewportSize({ width, height }) {

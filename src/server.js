@@ -39,6 +39,21 @@ function sendJson(res, body, status = 200) {
   res.end(payload);
 }
 
+function streamLive(res, manager) {
+  res.writeHead(200, {
+    "Content-Type": "multipart/x-mixed-replace; boundary=frame",
+    "Cache-Control": "no-store",
+  });
+  const remove = manager.addLiveViewer((jpeg) => {
+    // 受け取りが追いつかないときは、古いフレームを積まずに捨てる
+    if (res.writableNeedDrain) return;
+    res.write(`--frame\r\nContent-Type: image/jpeg\r\nContent-Length: ${jpeg.length}\r\n\r\n`);
+    res.write(jpeg);
+    res.write("\r\n");
+  });
+  res.on("close", remove);
+}
+
 function readBody(req) {
   return new Promise((resolve, reject) => {
     const chunks = [];
@@ -229,6 +244,10 @@ export function createApp({ manager, store, publicDir = PUBLIC_DIR }) {
         sendJson(res, { ...(await manager.status()), chrome: installedChrome() });
         return;
       }
+      if (req.method === "GET" && url.pathname === "/api/live") {
+        streamLive(res, manager);
+        return;
+      }
       if (req.method === "GET" && url.pathname === "/api/config") {
         const config = await store.load();
         const chrome = installedChrome();
@@ -252,21 +271,6 @@ export function createApp({ manager, store, publicDir = PUBLIC_DIR }) {
         const target = normalizeUrl(body.url);
         await manager.navigate(target);
         sendJson(res, { ...(await manager.status()), url: target });
-        return;
-      }
-      if (req.method === "POST" && url.pathname === "/api/back") {
-        await manager.back();
-        sendJson(res, await manager.status());
-        return;
-      }
-      if (req.method === "POST" && url.pathname === "/api/forward") {
-        await manager.forward();
-        sendJson(res, await manager.status());
-        return;
-      }
-      if (req.method === "POST" && url.pathname === "/api/reload") {
-        await manager.reload();
-        sendJson(res, await manager.status());
         return;
       }
       if (req.method === "POST" && url.pathname === "/api/capture") {
