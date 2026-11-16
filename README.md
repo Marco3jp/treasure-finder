@@ -8,11 +8,7 @@
 
 ホストに Node.js は要りません。配布物は Bun で作った単一実行ファイルです。
 
-Windows なら、ビルド済みの `treasure-finder-win.exe` を置くだけで動きます。
-
-```text
-treasure-finder-win.exe
-```
+Windows なら、[Releases の Latest](https://github.com/Marco3jp/treasure-finder/releases/latest) から `treasure-finder-win.exe` をダウンロードして、好きな場所に置いてダブルクリックするだけで動きます。Linux 向けは同じ場所の `treasure-finder-linux-x64.tar.gz` です。Releases は main に push するたびに作り直されます。
 
 起動すると、いつも使っているブラウザで <http://127.0.0.1:47321> が開きます。タブの取り込みができるのは Google Chrome と Microsoft Edge だけなので、ほかのブラウザで開いたときは、この URL を Chrome に貼って開き直してください。
 

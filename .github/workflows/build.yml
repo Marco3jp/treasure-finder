@@ -1,0 +1,32 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: jdx/mise-action@v5
+      - run: bun run build:win
+      - run: bun run build:linux
+      # ダウンロードすると実行権限が消えるので、tar に固めて配る
+      - run: tar -czf dist/treasure-finder-linux-x64.tar.gz -C dist treasure-finder-linux
+      - name: Release を作る
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="build-$(TZ=Asia/Tokyo date +%Y%m%d-%H%M%S)"
+          gh release create "$tag" \
+            dist/treasure-finder-win.exe \
+            dist/treasure-finder-linux-x64.tar.gz \
+            --target "$GITHUB_SHA" \
+            --title "$tag" \
+            --notes "$(git log -1 --format='%s (%h)')" \
+            --latest
