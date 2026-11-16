@@ -4,15 +4,12 @@ import http from "node:http";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { BrowserManager, installedChrome } from "./browser-manager.js";
-import {
-  CAPTURES_DIR,
-  ConfigStore,
-  PUBLIC_DIR,
-} from "./config-store.js";
-import { normalizeUrl } from "./domain.js";
+import { outputSize } from "../public/frame.js";
 import { AppError } from "./errors.js";
-import { allProfiles } from "./profiles.js";
+import { timestampFilename } from "./filename.js";
+import { jpegSize } from "./jpeg.js";
+import { CAPTURES_DIR, PUBLIC_DIR } from "./paths.js";
+import { SettingsStore } from "./settings.js";
 
 const PORT = Number(process.env.PORT || 47321);
 const HOST = "127.0.0.1";
@@ -37,49 +34,6 @@ function sendJson(res, body, status = 200) {
     "Cache-Control": "no-store",
   });
   res.end(payload);
-}
-
-function streamLive(res, manager) {
-  res.writeHead(200, {
-    "Content-Type": "multipart/x-mixed-replace; boundary=frame",
-    "Cache-Control": "no-store",
-  });
-  const remove = manager.addLiveViewer((jpeg) => {
-    // 受け取りが追いつかないときは、古いフレームを積まずに捨てる
-    if (res.writableNeedDrain) return;
-    res.write(`--frame\r\nContent-Type: image/jpeg\r\nContent-Length: ${jpeg.length}\r\n\r\n`);
-    res.write(jpeg);
-    res.write("\r\n");
-  });
-  res.on("close", remove);
-}
-
-function readBody(req) {
-  return new Promise((resolve, reject) => {
-    const chunks = [];
-    let size = 0;
-    req.on("data", (chunk) => {
-      size += chunk.length;
-      if (size > 1_000_000) {
-        reject(new AppError("リクエストが大きすぎます", 413));
-        req.destroy();
-        return;
-      }
-      chunks.push(chunk);
-    });
-    req.on("end", () => {
-      if (!chunks.length) {
-        resolve({});
-        return;
-      }
-      try {
-        resolve(JSON.parse(Buffer.concat(chunks).toString("utf8")));
-      } catch {
-        reject(new AppError("JSONが壊れています", 400));
-      }
-    });
-    req.on("error", reject);
-  });
 }
 
 export function isEmbedded(file) {
@@ -236,61 +190,118 @@ function openPath(target) {
   child.unref();
 }
 
-export function createApp({ manager, store, publicDir = PUBLIC_DIR }) {
+
+const MAX_UPLOAD = 64 * 1024 * 1024;
+
+function readBody(req, limit) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    let size = 0;
+    req.on("data", (chunk) => {
+      size += chunk.length;
+      if (size > limit) {
+        reject(new AppError("送られたデータが大きすぎます", 413, "TOO_LARGE"));
+        req.destroy();
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on("end", () => resolve(Buffer.concat(chunks)));
+    req.on("error", reject);
+  });
+}
+
+async function readJson(req) {
+  try {
+    return JSON.parse((await readBody(req, 64 * 1024)).toString("utf8"));
+  } catch (error) {
+    if (error instanceof AppError) throw error;
+    throw new AppError("JSONが壊れています", 400, "BAD_JSON");
+  }
+}
+
+function readJpeg(req) {
+  if (!/^image\/jpeg\b/i.test(req.headers["content-type"] || "")) {
+    return Promise.reject(new AppError("JPEG で送ってください", 415, "BAD_TYPE"));
+  }
+  return readBody(req, MAX_UPLOAD);
+}
+
+async function uniqueName(directory, filename) {
+  const ext = path.extname(filename);
+  const stem = filename.slice(0, -ext.length);
+  let candidate = filename;
+  let index = 2;
+  while (true) {
+    try {
+      await fsp.access(path.join(directory, candidate));
+      candidate = `${stem}-${index}${ext}`;
+      index += 1;
+    } catch {
+      return candidate;
+    }
+  }
+}
+
+async function saveCapture(directory, buffer, output) {
+  let size;
+  try {
+    size = jpegSize(buffer);
+  } catch (error) {
+    throw new AppError(error.message, 400, "BAD_JPEG");
+  }
+  if (size.width !== output.width || size.height !== output.height) {
+    throw new AppError(
+      `保存サイズの ${output.width}×${output.height} ではありません（${size.width}×${size.height}）`,
+      400,
+      "BAD_SIZE",
+    );
+  }
+  await fsp.mkdir(directory, { recursive: true });
+  const file = await uniqueName(directory, timestampFilename());
+  await fsp.writeFile(path.join(directory, file), buffer);
+  return { file, width: size.width, height: size.height, bytes: buffer.length };
+}
+
+// ほかのサイトのページから、このPCに画像を置いたりフォルダを開いたりさせない
+function fromPanel(req) {
+  const origin = req.headers.origin;
+  return !origin || origin === `http://${req.headers.host}`;
+}
+
+export function createApp({
+  capturesDir = CAPTURES_DIR,
+  publicDir = PUBLIC_DIR,
+  settings = new SettingsStore(),
+} = {}) {
   return http.createServer(async (req, res) => {
     try {
       const url = new URL(req.url || "/", `http://${HOST}`);
-      if (req.method === "GET" && url.pathname === "/api/status") {
-        sendJson(res, { ...(await manager.status()), chrome: installedChrome() });
+      if (req.method !== "GET" && !fromPanel(req)) {
+        sendJson(res, { error: "このページからは操作できません" }, 403);
         return;
       }
-      if (req.method === "GET" && url.pathname === "/api/live") {
-        streamLive(res, manager);
+      if (req.method === "GET" && url.pathname === "/api/settings") {
+        sendJson(res, await settings.load());
         return;
       }
-      if (req.method === "GET" && url.pathname === "/api/config") {
-        const config = await store.load();
-        const chrome = installedChrome();
-        sendJson(res, { config, profiles: allProfiles(config), chrome });
+      if (req.method === "PUT" && url.pathname === "/api/settings") {
+        sendJson(res, await settings.save(await readJson(req)));
         return;
       }
-      if (req.method === "PUT" && url.pathname === "/api/config") {
-        const body = await readBody(req);
-        let saved;
-        try {
-          saved = await store.save(body.config ?? body);
-        } catch (error) {
-          throw new AppError(error.message, 400, "BAD_CONFIG");
-        }
-        await manager.syncWithConfig();
-        sendJson(res, { config: saved, profiles: allProfiles(saved) });
-        return;
-      }
-      if (req.method === "POST" && url.pathname === "/api/navigate") {
-        const body = await readBody(req);
-        const target = normalizeUrl(body.url);
-        await manager.navigate(target);
-        sendJson(res, { ...(await manager.status()), url: target });
-        return;
-      }
-      if (req.method === "POST" && url.pathname === "/api/capture") {
-        const shot = await manager.capture();
-        sendJson(res, shot);
-        return;
-      }
-      if (req.method === "POST" && url.pathname === "/api/browser/close") {
-        await manager.close();
-        sendJson(res, await manager.status());
+      if (req.method === "POST" && url.pathname === "/api/captures") {
+        const output = outputSize(await settings.load());
+        sendJson(res, await saveCapture(capturesDir, await readJpeg(req), output), 201);
         return;
       }
       if (req.method === "GET" && url.pathname === "/api/captures") {
-        sendJson(res, { files: await listCaptures(manager.capturesDir), directory: manager.capturesDir });
+        sendJson(res, { files: await listCaptures(capturesDir), directory: capturesDir });
         return;
       }
       if (req.method === "POST" && url.pathname === "/api/captures/open") {
-        await fsp.mkdir(manager.capturesDir, { recursive: true });
-        openPath(manager.capturesDir);
-        sendJson(res, { ok: true, directory: manager.capturesDir });
+        await fsp.mkdir(capturesDir, { recursive: true });
+        openPath(capturesDir);
+        sendJson(res, { ok: true, directory: capturesDir });
         return;
       }
       if (req.method === "GET" && url.pathname.startsWith("/captures/")) {
@@ -299,7 +310,7 @@ export function createApp({ manager, store, publicDir = PUBLIC_DIR }) {
           sendJson(res, { error: "見つかりません" }, 404);
           return;
         }
-        serveFile(req, res, path.join(manager.capturesDir, name));
+        serveFile(req, res, path.join(capturesDir, name));
         return;
       }
       if (req.method === "GET") {
@@ -324,22 +335,16 @@ export function createApp({ manager, store, publicDir = PUBLIC_DIR }) {
 }
 
 export function startServer({ port = PORT, host = HOST, open = true } = {}) {
-  const store = new ConfigStore();
-  const manager = new BrowserManager(store, { capturesDir: CAPTURES_DIR });
-  const server = createApp({ manager, store });
-  server.requestTimeout = 0;
+  const server = createApp();
   server.listen(port, host, () => {
     const address = `http://${host}:${port}`;
     console.log(`Treasure Finder  ${address}`);
     if (open && process.env.TREASURE_FINDER_NO_OPEN !== "1") openPath(address);
   });
-  const shutdown = async () => {
-    await manager.close();
-    server.close(() => process.exit(0));
-  };
-  process.on("SIGINT", () => void shutdown());
-  process.on("SIGTERM", () => void shutdown());
-  return { server, manager, store };
+  const shutdown = () => server.close(() => process.exit(0));
+  process.on("SIGINT", shutdown);
+  process.on("SIGTERM", shutdown);
+  return { server };
 }
 
 const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);

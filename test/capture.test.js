@@ -1,206 +1,241 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
-import { readdirSync, readFileSync } from "node:fs";
+import { spawn, spawnSync } from "node:child_process";
+import { accessSync, constants, readdirSync } from "node:fs";
 import fs from "node:fs/promises";
-import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { BrowserManager } from "../src/browser-manager.js";
-import { ConfigStore } from "../src/config-store.js";
 import { jpegSize } from "../src/jpeg.js";
+import { createApp } from "../src/server.js";
+import { SettingsStore } from "../src/settings.js";
 
-function averageLuma(file) {
-  return new Promise((resolve, reject) => {
-    const child = spawn("ffmpeg", [
-      "-v", "error",
-      "-i", file,
-      "-vf", "scale=32:18",
-      "-f", "rawvideo",
-      "-pix_fmt", "gray",
-      "pipe:1",
-    ]);
-    const chunks = [];
-    let errorText = "";
-    child.stdout.on("data", (chunk) => chunks.push(chunk));
-    child.stderr.on("data", (chunk) => {
-      errorText += chunk;
-    });
-    child.on("close", (code) => {
-      if (code !== 0) {
-        reject(new Error(errorText || `ffmpeg exited ${code}`));
-        return;
-      }
-      const buffer = Buffer.concat(chunks);
-      let sum = 0;
-      for (const value of buffer) sum += value;
-      resolve(sum / buffer.length);
-    });
-  });
-}
+// 画面共有の選択画面は、このタイトルのタブを自動で選ぶ
+const TARGET_TITLE = "tf-target";
 
-function startFixture(directory) {
-  const server = http.createServer((req, res) => {
-    const url = new URL(req.url, "http://127.0.0.1");
-    if (url.pathname === "/video") {
-      res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
-      res.end(`<!doctype html><video src="/clip.mp4" autoplay muted loop playsinline style="width:640px;height:360px"></video>`);
-      return;
-    }
-    if (url.pathname === "/foreign") {
-      // CORS のない別オリジンの映像。canvas で読めないので画面から切り抜く
-      const other = req.headers.host.startsWith("localhost") ? "127.0.0.1" : "localhost";
-      const port = req.headers.host.split(":")[1];
-      res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
-      res.end(`<!doctype html><video src="http://${other}:${port}/clip.mp4" autoplay muted loop playsinline style="width:640px;height:360px"></video>`);
-      return;
-    }
-    if (url.pathname === "/frame") {
-      res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
-      res.end(`<!doctype html><iframe src="/video" style="width:320px;height:180px;border:8px solid white"></iframe>`);
-      return;
-    }
-    if (url.pathname === "/clip.mp4") {
-      const file = path.join(directory, "clip.mp4");
-      fs.stat(file).then((stat) => {
-        const range = req.headers.range;
-        const match = range && /^bytes=(\d*)-(\d*)$/.exec(range);
-        let start = 0;
-        let end = stat.size - 1;
-        let status = 200;
-        if (match) {
-          start = match[1] === "" ? Math.max(0, stat.size - Number(match[2] || 0)) : Number(match[1]);
-          end = match[2] === "" || match[1] === "" ? stat.size - 1 : Math.min(Number(match[2]), stat.size - 1);
-          status = 206;
-        }
-        res.writeHead(status, {
-          "Content-Type": "video/mp4",
-          "Content-Length": end - start + 1,
-          "Content-Range": `bytes ${start}-${end}/${stat.size}`,
-          "Accept-Ranges": "bytes",
-        });
-        fs.open(file).then((handle) => handle.createReadStream({ start, end })).then((stream) => {
-          stream.pipe(res);
-        }).catch(() => res.end());
-      }).catch(() => {
-        res.writeHead(404);
-        res.end();
-      });
-      return;
-    }
-    res.writeHead(404);
-    res.end();
-  });
-  return new Promise((resolve) => {
-    server.listen(0, "127.0.0.1", () => {
-      resolve({ server, port: server.address().port });
-    });
-  });
-}
-
-async function makeClip(directory) {
-  const file = path.join(directory, "clip.mp4");
-  await new Promise((resolve, reject) => {
-    const child = spawn("ffmpeg", [
-      "-y",
-      "-f", "lavfi",
-      "-i", "testsrc=size=1280x720:rate=30:duration=2",
-      "-pix_fmt", "yuv420p",
-      "-movflags", "+faststart",
-      file,
-    ]);
-    let errorText = "";
-    child.stderr.on("data", (chunk) => {
-      errorText += chunk;
-    });
-    child.on("close", (code) => {
-      if (code === 0) resolve();
-      else reject(new Error(errorText.slice(-500)));
-    });
-  });
-  return file;
-}
-
-function browserCommandLine(userDataDir) {
-  const hits = [];
-  for (const pid of readdirSync("/proc")) {
-    if (!/^\d+$/.test(pid)) continue;
-    let text = "";
-    try {
-      text = readFileSync(`/proc/${pid}/cmdline`).toString("utf8").replaceAll("\0", " ");
-    } catch {
-      continue;
-    }
-    if (text.includes(userDataDir)) hits.push(text);
-  }
-  const main = hits.find((line) => line.includes("--user-data-dir") && !line.includes("--type="));
-  if (!main) throw new Error("撮影用ブラウザのプロセスが見つかりません");
-  return main;
-}
-
-test("video要素を画面サイズと無関係に1920x1080で残し、Cookieと起動方法を保つ", { timeout: 180000 }, async () => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), "treasure-finder-capture-"));
-  const store = new ConfigStore(path.join(root, "config.json"));
-  const manager = new BrowserManager(store, {
-    userDataRoot: path.join(root, "user-data"),
-    capturesDir: path.join(root, "captures"),
-  });
-  await makeClip(root);
-  const fixture = await startFixture(root);
+function findChromium() {
+  const candidates = [process.env.CHROME_PATH];
+  const cache = path.join(os.homedir(), ".cache", "ms-playwright");
   try {
-    await manager.navigate(`http://127.0.0.1:${fixture.port}/video`);
-    const page = await manager.currentPage();
-    const metrics = await page.evaluate(() => ({
-      width: window.innerWidth,
-      height: window.innerHeight,
-      ua: navigator.userAgent,
-      scale: window.devicePixelRatio,
-    }));
-    assert.ok(metrics.width > 0 && metrics.height > 0);
-    assert.match(metrics.ua, /Chrome\/\d+/);
-    assert.doesNotMatch(metrics.ua, /HeadlessChrome/);
-
-    const planted = await page.evaluate(() => {
-      document.cookie = "tf_kept=yes; path=/; max-age=31536000";
-      return document.cookie;
-    });
-    assert.match(planted, /tf_kept=yes/);
-    const shot = await manager.capture();
-    const saved = path.join(root, "captures", shot.file);
-    const size = jpegSize(await fs.readFile(saved));
-    assert.deepEqual(size, { width: 1920, height: 1080 });
-    assert.match(shot.file, /^\d{8}-\d{6}-\d{3}\.jpg$/);
-    assert.ok(await averageLuma(saved) > 15, "撮影結果が真っ黒です");
-
-    await manager.navigate(`http://127.0.0.1:${fixture.port}/foreign`);
-    const before = await page.evaluate(() => [window.innerWidth, window.innerHeight]);
-    const foreign = await manager.capture();
-    const foreignFile = path.join(root, "captures", foreign.file);
-    assert.deepEqual(jpegSize(await fs.readFile(foreignFile)), { width: 1920, height: 1080 });
-    assert.ok(await averageLuma(foreignFile) > 15, "別オリジンの撮影結果が真っ黒です");
-    const after = await page.evaluate(() => [window.innerWidth, window.innerHeight]);
-    assert.deepEqual(after, before, "撮影後に表示領域が元に戻っていません");
-
-    const config = await store.load();
-    config.domainProfiles.localhost = "no-gpu";
-    await store.save(config);
-    await manager.navigate(`http://localhost:${fixture.port}/frame`);
-    const noGpu = browserCommandLine(manager.userDataDir);
-    assert.match(noGpu, /--disable-gpu/);
-    assert.equal(manager.profileId, "no-gpu");
-    const framed = await manager.capture();
-    const framedSize = jpegSize(await fs.readFile(path.join(root, "captures", framed.file)));
-    assert.deepEqual(framedSize, { width: 1920, height: 1080 });
-    assert.ok(await averageLuma(path.join(root, "captures", framed.file)) > 15);
-
-    await manager.close();
-    await manager.navigate(`http://127.0.0.1:${fixture.port}/video`);
-    const cookie = await manager.currentPage().then((open) => open.evaluate(() => document.cookie));
-    assert.match(cookie, /tf_kept=yes/);
-    assert.equal(manager.profileId, "default");
-    assert.doesNotMatch(browserCommandLine(manager.userDataDir), /--disable-gpu/);
-  } finally {
-    await manager.close();
-    await new Promise((resolve) => fixture.server.close(resolve));
+    for (const name of readdirSync(cache).filter((entry) => /^chromium-\d+$/.test(entry)).sort().reverse()) {
+      candidates.push(path.join(cache, name, "chrome-linux64", "chrome"));
+    }
+  } catch {
+    // Playwright のブラウザが入っていない
   }
+  candidates.push("/usr/bin/google-chrome-stable", "/usr/bin/chromium");
+  return candidates.find((file) => {
+    if (!file) return false;
+    try {
+      accessSync(file, constants.X_OK);
+      return true;
+    } catch {
+      return false;
+    }
+  });
+}
+
+function page(body, background) {
+  return `<!doctype html><html><head><meta charset="utf-8"><title>${TARGET_TITLE}</title>
+<style>html, body { margin: 0; height: 100%; background: ${background}; } ${body.style}</style></head>
+<body>${body.html}</body></html>`;
+}
+
+const FULL = page({
+  style: "video { width: 100vw; height: 100vh; object-fit: contain; display: block; }",
+  html: '<video src="/sample.mp4" autoplay muted loop playsinline></video>',
+}, "#000");
+
+const WINDOWED = page({
+  style: "body { display: grid; place-items: center; } video { width: 640px; height: 360px; }",
+  html: '<video src="/sample.mp4" autoplay muted loop playsinline></video>',
+}, "#2a241c");
+
+const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+async function connect(url) {
+  const socket = new WebSocket(url);
+  await new Promise((resolve, reject) => {
+    socket.onopen = resolve;
+    socket.onerror = reject;
+  });
+  let id = 0;
+  const pending = new Map();
+  socket.onmessage = (event) => {
+    const message = JSON.parse(event.data);
+    pending.get(message.id)?.(message);
+    pending.delete(message.id);
+  };
+  const send = (method, params = {}) => new Promise((resolve) => {
+    id += 1;
+    pending.set(id, resolve);
+    socket.send(JSON.stringify({ id, method, params }));
+  });
+  return {
+    async evaluate(expression) {
+      const { result } = await send("Runtime.evaluate", {
+        expression,
+        awaitPromise: true,
+        userGesture: true,
+        returnByValue: true,
+      });
+      if (result.exceptionDetails) throw new Error(result.exceptionDetails.exception?.description);
+      return result.result.value;
+    },
+    navigate: (url) => send("Page.navigate", { url }),
+    close: () => socket.close(),
+  };
+}
+
+async function waitFor(tab, expression, timeout = 15000) {
+  const deadline = Date.now() + timeout;
+  while (Date.now() < deadline) {
+    if (await tab.evaluate(expression)) return;
+    await delay(200);
+  }
+  throw new Error(`待ちきれませんでした: ${expression}`);
+}
+
+const chromium = findChromium();
+
+// 動画のページを開いたタブと操作パネルを用意して、パネルからそのタブを共有する
+async function startSession(t, windowSize) {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "treasure-finder-capture-"));
+  const publicDir = path.join(root, "public");
+  const capturesDir = path.join(root, "captures");
+  await fs.cp(path.resolve("public"), publicDir, { recursive: true });
+  await fs.writeFile(path.join(publicDir, "full.html"), FULL);
+  await fs.writeFile(path.join(publicDir, "windowed.html"), WINDOWED);
+
+  const settings = new SettingsStore(path.join(root, "config.json"));
+  const server = createApp({ capturesDir, publicDir, settings });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  t.after(() => server.close());
+
+  const port = 9400 + Math.floor(Math.random() * 400);
+  const browser = spawn(chromium, [
+    "--headless=new",
+    `--remote-debugging-port=${port}`,
+    `--user-data-dir=${path.join(root, "profile")}`,
+    `--auto-select-tab-capture-source-by-title=${TARGET_TITLE}`,
+    "--autoplay-policy=no-user-gesture-required",
+    `--window-size=${windowSize}`,
+    "--no-first-run",
+    "about:blank",
+  ], { stdio: "ignore" });
+  t.after(() => browser.kill());
+
+  const open = async (url) => {
+    for (let i = 0; i < 50; i += 1) {
+      try {
+        const response = await fetch(`http://127.0.0.1:${port}/json/new?${encodeURIComponent(url)}`, { method: "PUT" });
+        return connect((await response.json()).webSocketDebuggerUrl);
+      } catch {
+        await delay(200);
+      }
+    }
+    throw new Error("Chromium につながりません");
+  };
+
+  const target = await open(`${base}/full.html`);
+  t.after(() => target.close());
+  await waitFor(target, "document.querySelector('video')?.currentTime > 0.2");
+  const panel = await open(`${base}/`);
+  t.after(() => panel.close());
+
+  await waitFor(panel, "document.querySelector('#share')?.disabled === false");
+  // ヘッドレスでは最初の共有が選択画面で止まることがあるので、共有が始まるまで押し直す
+  await panel.evaluate("document.querySelector('#share').click()");
+  for (let i = 0; i < 3; i += 1) {
+    const started = await waitFor(panel, "!document.querySelector('#stop').hidden", 5000).then(() => true, () => false);
+    if (started) break;
+    await panel.evaluate("document.querySelector('#share').click()");
+  }
+  await waitFor(panel, "!document.querySelector('#capture').disabled").catch(async (error) => {
+    const state = await panel.evaluate(`JSON.stringify({
+      share: document.querySelector('#share-line').textContent,
+      error: document.querySelector('#banner').textContent,
+    })`);
+    throw new Error(`${error.message} ${state}`);
+  });
+  assert.equal(await panel.evaluate("document.querySelector('#share-line').textContent"), "タブを共有しています");
+
+  const shoot = async () => {
+    const before = await panel.evaluate("document.querySelector('#shot-meta').textContent");
+    await panel.evaluate("document.querySelector('#capture').click()");
+    await waitFor(panel, `(() => { const t = document.querySelector('#shot-meta').textContent; return t !== ${JSON.stringify(before)} && t.includes('KB'); })()`);
+    return panel.evaluate(`({
+      meta: document.querySelector('#shot-meta').textContent,
+      warning: document.querySelector('#warning').hidden ? "" : document.querySelector('#warning').textContent,
+      error: document.querySelector('#banner').hidden ? "" : document.querySelector('#banner').textContent,
+      size: document.querySelector('#size-line').textContent,
+    })`);
+  };
+
+  return { base, target, panel, capturesDir, shoot };
+}
+
+// 保存した JPEG の上から rows 行の平均の明るさ
+function topLuma(file, rows) {
+  const result = spawnSync("ffmpeg", [
+    "-v", "error", "-i", file, "-vf", `crop=iw:${rows}:0:0,scale=64:1`,
+    "-f", "rawvideo", "-pix_fmt", "gray", "pipe:1",
+  ]);
+  if (result.status !== 0) throw new Error(String(result.stderr));
+  return result.stdout.reduce((sum, value) => sum + value, 0) / result.stdout.length;
+}
+
+const skip = !chromium && "Chromium が見つかりません";
+
+test("共有したタブのフレームを 1920×1080 で保存する", { skip, timeout: 90000 }, async (t) => {
+  const { base, target, capturesDir, shoot } = await startSession(t, "1920,1224");
+
+  const full = await shoot();
+  assert.equal(full.error, "");
+  assert.match(full.meta, /1920×1080/);
+  assert.equal(full.warning, "", JSON.stringify(full));
+
+  // 共有したまま同じタブで別のページへ移っても、取り込みは続く
+  await target.navigate(`${base}/windowed.html`);
+  await waitFor(target, "document.querySelector('video')?.currentTime > 0.2");
+  await delay(1000);
+  const windowed = await shoot();
+  assert.match(windowed.warning, /フルスクリーン/, JSON.stringify(windowed));
+
+  const files = await fs.readdir(capturesDir);
+  assert.equal(files.length, 2);
+  for (const file of files) {
+    assert.deepEqual(jpegSize(await fs.readFile(path.join(capturesDir, file))), { width: 1920, height: 1080 });
+  }
+  t.diagnostic(`フルスクリーン相当: ${full.size} / ウィンドウ内: ${windowed.size}`);
+});
+
+test("16:10 の画面では上下の帯を除いた中央の 16:9 を保存する", { skip, timeout: 90000 }, async (t) => {
+  const { panel, capturesDir, shoot } = await startSession(t, "2560,1744");
+  // 取り込みの上限が 1920×1200 に合わさるのを待つ
+  await delay(1500);
+  const shot = await shoot();
+  assert.equal(shot.error, "");
+  assert.equal(shot.warning, "", JSON.stringify(shot));
+  assert.match(shot.size, /×1200$/);
+  const [file] = await fs.readdir(capturesDir);
+  // 帯が残っていれば上端が黒くなる。サンプル動画の上端は明るいカラーバー
+  assert.ok(topLuma(path.join(capturesDir, file), 4) > 60);
+  t.diagnostic(shot.size);
+
+  // 動画の縦横比を 4:3 にすると、1440×1080 で保存する
+  await panel.evaluate(`(() => {
+    const select = document.querySelector('#aspect-preset');
+    select.value = '4:3';
+    select.dispatchEvent(new Event('change'));
+    document.querySelector('#settings-form').requestSubmit();
+    return true;
+  })()`);
+  await waitFor(panel, "document.querySelector('#output-tag').textContent.startsWith('1440×1080')");
+  await delay(1500);
+  const narrow = await shoot();
+  assert.equal(narrow.error, "");
+  assert.equal(narrow.warning, "", JSON.stringify(narrow));
+  assert.match(narrow.meta, /1440×1080/);
+  t.diagnostic(narrow.size);
 });
