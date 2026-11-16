@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "description": "Treasure Finder。video要素を1920x1080のJPEGで残すデスクトップアプリ",
+  "description": "Treasure Finder。共有したタブの動画を1920x1080のJPEGで残すデスクトップアプリ",
   "scripts": {
     "start": "node src/server.js",
     "start:bun": "bun src/server.js",

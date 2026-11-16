@@ -1,207 +1,317 @@
-const urlInput = document.querySelector("#url");
+import {
+  DEFAULT_SETTINGS,
+  JPEG_QUALITY,
+  captureCap,
+  containRect,
+  edgeWarning,
+  outputSize,
+  placeVideo,
+  ratio,
+} from "/frame.js";
+
 const banner = document.querySelector("#banner");
+const warning = document.querySelector("#warning");
 const lamp = document.querySelector("#lamp");
-const engineLine = document.querySelector("#engine-line");
-const uaLine = document.querySelector("#ua-line");
-const domainLine = document.querySelector("#domain-line");
-const chromeLine = document.querySelector("#chrome-line");
-const rules = document.querySelector("#rules");
-const profileSelect = document.querySelector("#rule-profile");
-const defaultProfile = document.querySelector("#default-profile");
-const catalog = document.querySelector("#profile-catalog");
-const filenamePreview = document.querySelector("#filename-preview");
-const preview = document.querySelector("#preview");
-const stageEmpty = document.querySelector("#stage-empty");
-const shotMeta = document.querySelector("#shot-meta");
-const filmstrip = document.querySelector("#filmstrip");
+const shareLine = document.querySelector("#share-line");
+const sizeLine = document.querySelector("#size-line");
+const shareButton = document.querySelector("#share");
+const stopButton = document.querySelector("#stop");
+const pipButton = document.querySelector("#pip");
 const captureButton = document.querySelector("#capture");
 const live = document.querySelector("#live");
 const liveEmpty = document.querySelector("#live-empty");
 const liveStage = document.querySelector("#live-stage");
 const liveMeta = document.querySelector("#live-meta");
-const liveNote = document.querySelector("#live-note");
+const preview = document.querySelector("#preview");
+const stageEmpty = document.querySelector("#stage-empty");
+const shotMeta = document.querySelector("#shot-meta");
+const filmstrip = document.querySelector("#filmstrip");
+const capturesDir = document.querySelector("#captures-dir");
+const outputTag = document.querySelector("#output-tag");
+const settingsForm = document.querySelector("#settings-form");
+const screenWidth = document.querySelector("#screen-width");
+const screenHeight = document.querySelector("#screen-height");
+const outputLine = document.querySelector("#output-line");
+const aspectPreset = document.querySelector("#aspect-preset");
+const aspectWidth = document.querySelector("#aspect-width");
+const aspectHeight = document.querySelector("#aspect-height");
+const settingsNote = document.querySelector("#settings-note");
 
-let config = null;
-let profiles = [];
-let busy = false;
-let browserOpen = false;
-let liveState = null;
+const SAMPLE_WIDTH = 384;
+const PREVIEW_MS = 100;
 
-// 画面が見えていてブラウザが開いている間だけ、MJPEG を受け取る
-function connectLive() {
-  const wanted = browserOpen && document.visibilityState === "visible";
-  live.hidden = !browserOpen;
-  liveEmpty.hidden = browserOpen;
-  if (wanted && !live.getAttribute("src")) live.src = `/api/live?t=${Date.now()}`;
-  if (!wanted && live.getAttribute("src")) live.removeAttribute("src");
-}
+let settings = DEFAULT_SETTINGS;
+let track = null;
+let latest = null;
+let capKey = null;
+let capturing = false;
+let lastDrawn = 0;
+let pipWindow = null;
 
-// screencast はページ全体なので、撮影対象の video の範囲だけが枠に収まるよう拡大して切り抜く
-function placeLive() {
-  const viewport = liveState?.viewport;
-  if (liveState?.mode !== "page" || !viewport) {
-    live.removeAttribute("style");
-    return;
-  }
-  const box = liveState.target || { x: 0, y: 0, width: viewport.width, height: viewport.height };
-  const stageWidth = liveStage.clientWidth;
-  const stageHeight = liveStage.clientHeight;
-  const scale = Math.min(stageWidth / box.width, stageHeight / box.height);
-  const left = (stageWidth - box.width * scale) / 2 - box.x * scale;
-  const top = (stageHeight - box.height * scale) / 2 - box.y * scale;
-  const right = (viewport.width - box.x - box.width) * scale;
-  const bottom = (viewport.height - box.y - box.height) * scale;
-  Object.assign(live.style, {
-    width: `${viewport.width * scale}px`,
-    height: `${viewport.height * scale}px`,
-    left: `${left}px`,
-    top: `${top}px`,
-    clipPath: `inset(${box.y * scale}px ${right}px ${bottom}px ${box.x * scale}px)`,
-    objectFit: "fill",
-  });
-}
-
-live.addEventListener("error", () => live.removeAttribute("src"));
-document.addEventListener("visibilitychange", connectLive);
-window.addEventListener("resize", placeLive);
+const canShare = Boolean(navigator.mediaDevices?.getDisplayMedia) && "MediaStreamTrackProcessor" in window;
 
 function showError(message) {
-  if (!message) {
-    banner.hidden = true;
-    banner.textContent = "";
-    return;
-  }
-  banner.hidden = false;
-  banner.textContent = message;
+  banner.hidden = !message;
+  banner.textContent = message || "";
+}
+
+function showWarnings(messages) {
+  warning.hidden = !messages.length;
+  warning.textContent = messages.join(" ");
 }
 
 async function api(path, options) {
-  const response = await fetch(path, {
-    headers: { "Content-Type": "application/json" },
-    ...options,
-  });
+  const response = await fetch(path, options);
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(payload.error || "失敗しました");
   return payload;
 }
 
-function fillProfiles(select, selected) {
-  select.replaceChildren();
-  for (const profile of profiles) {
-    const option = document.createElement("option");
-    option.value = profile.id;
-    option.textContent = profile.label;
-    option.selected = profile.id === selected;
-    select.appendChild(option);
+function render() {
+  const sharing = Boolean(track);
+  const ready = sharing && Boolean(latest) && !capturing;
+  lamp.className = "status-dot";
+  if (capturing) lamp.classList.add("is-busy");
+  else if (sharing) lamp.classList.add("is-on");
+  shareButton.textContent = sharing ? "別のタブを選ぶ" : "撮るタブを選ぶ";
+  shareButton.disabled = !canShare;
+  stopButton.hidden = !sharing;
+  pipButton.hidden = !sharing || !("documentPictureInPicture" in window);
+  captureButton.disabled = !ready;
+  captureButton.textContent = capturing ? "撮っています" : "このフレームを撮る";
+  live.hidden = !sharing;
+  liveEmpty.hidden = sharing;
+  if (!canShare) {
+    shareLine.textContent = "このブラウザではタブを取り込めません。Google Chrome か Microsoft Edge で開いてください。";
+  } else if (!sharing) {
+    shareLine.textContent = "まだタブを共有していません";
+  } else {
+    shareLine.textContent = track.getSettings().displaySurface === "browser"
+      ? "タブを共有しています"
+      : "画面かウィンドウを共有しています。タブを選ぶと、動画の部分だけが写ります。";
   }
-}
-
-function renderConfig() {
-  if (!config) return;
-  for (const input of document.querySelectorAll('input[name="engine"]')) {
-    input.checked = input.value === config.engine;
-  }
-  document.querySelector("#executable-path").value = config.executablePath || "";
-  fillProfiles(profileSelect, "no-gpu");
-  fillProfiles(defaultProfile, config.defaultProfile);
-  filenamePreview.textContent = JSON.stringify(config.filenameRules, null, 2);
-  rules.replaceChildren();
-  const entries = Object.entries(config.domainProfiles || {});
-  if (!entries.length) {
-    const item = document.createElement("li");
-    item.textContent = "ドメイン指定はまだありません。全部、上の標準起動です。";
-    rules.appendChild(item);
-  }
-  for (const [host, profileId] of entries) {
-    const item = document.createElement("li");
-    const name = document.createElement("code");
-    name.textContent = host;
-    const side = document.createElement("div");
-    side.className = "cluster";
-    const label = document.createElement("span");
-    label.textContent = profiles.find((profile) => profile.id === profileId)?.label || profileId;
-    const remove = document.createElement("button");
-    remove.type = "button";
-    remove.textContent = "外す";
-    remove.addEventListener("click", async () => {
-      delete config.domainProfiles[host];
-      await saveConfig();
-    });
-    side.append(label, remove);
-    item.append(name, side);
-    rules.appendChild(item);
-  }
-  catalog.replaceChildren();
-  for (const profile of profiles) {
-    const item = document.createElement("li");
-    const text = document.createElement("div");
-    const title = document.createElement("strong");
-    title.textContent = profile.label;
-    const args = document.createElement("p");
-    args.textContent = profile.args?.length ? profile.args.join(" ") : "追加の起動引数はありません";
-    text.append(title, args);
-    item.append(text);
-    if (!profile.builtin) {
-      const remove = document.createElement("button");
-      remove.type = "button";
-      remove.textContent = "削除";
-      remove.addEventListener("click", async () => {
-        config.customProfiles = config.customProfiles.filter((entry) => entry.id !== profile.id);
-        for (const [host, profileId] of Object.entries(config.domainProfiles)) {
-          if (profileId === profile.id) delete config.domainProfiles[host];
-        }
-        if (config.defaultProfile === profile.id) config.defaultProfile = "default";
-        await saveConfig();
-      });
-      item.append(remove);
+  const width = latest?.displayWidth;
+  const height = latest?.displayHeight;
+  sizeLine.textContent = width ? `取り込み ${width}×${height}` : "";
+  liveMeta.textContent = width && placeVideo({ width, height }, settings).scale > 1.01
+    ? "動画の範囲が保存サイズより小さいので、引き伸ばして保存します"
+    : width ? "点線の中を保存します" : "";
+  const output = outputSize(settings);
+  outputTag.textContent = `${output.width}×${output.height} · JPEG ${JPEG_QUALITY}`;
+  if (pipWindow) {
+    const button = pipWindow.document.querySelector("#capture");
+    if (button) {
+      button.disabled = !ready;
+      button.textContent = captureButton.textContent;
     }
-    catalog.appendChild(item);
   }
 }
 
-function renderStatus(status) {
-  browserOpen = status.browserOpen;
-  connectLive();
-  liveState = status.live;
-  placeLive();
-  const mode = status.live?.mode;
-  const fallback = mode === "page";
-  liveMeta.textContent = {
-    video: "撮影される video の映像",
-    loading: "video を読み込んでいます",
-    page: status.live?.target ? "ページを video の位置で切り抜き" : "ページ全体",
-  }[mode] || "";
-  liveNote.hidden = !fallback;
-  if (fallback && status.live.target) {
-    liveNote.textContent = "video の映像を直接読み出せなかったので、ページの表示を video の位置で切り抜いています。操作ボタンや字幕が重なって見えることがあり、撮影結果とは見た目が違う場合があります。";
-  } else if (fallback) {
-    liveNote.textContent = "撮影できる video 要素を検出できていません。ページ全体を映しています。動画が再生されているか確認してください。";
+function drawPreview(frame) {
+  const now = performance.now();
+  if (document.visibilityState !== "visible" || now - lastDrawn < PREVIEW_MS) return;
+  lastDrawn = now;
+  const scale = window.devicePixelRatio || 1;
+  const width = Math.round(liveStage.clientWidth * scale);
+  const height = Math.round(liveStage.clientHeight * scale);
+  if (!width || !height) return;
+  if (live.width !== width || live.height !== height) {
+    live.width = width;
+    live.height = height;
   }
-  lamp.className = "lamp";
-  if (status.capturing) lamp.classList.add("hot");
-  else if (status.launching) lamp.classList.add("busy");
-  else if (status.browserOpen) lamp.classList.add("on");
-  if (status.browserOpen) {
-    engineLine.textContent = `${status.engineLabel || status.engine} ${status.version || ""}`.trim();
-  } else if (status.launching) {
-    engineLine.textContent = "ブラウザを起動しています";
-  } else {
-    engineLine.textContent = "ブラウザはまだ起動していません";
+  const context = live.getContext("2d");
+  context.fillStyle = "#000";
+  context.fillRect(0, 0, width, height);
+  const size = { width: frame.displayWidth, height: frame.displayHeight };
+  const place = containRect({ width, height }, ratio(size));
+  context.drawImage(frame, place.x, place.y, place.width, place.height);
+  const { source } = placeVideo(size, settings);
+  const shrink = place.width / size.width;
+  context.setLineDash([6 * devicePixelRatio, 4 * devicePixelRatio]);
+  context.lineWidth = Math.max(1, devicePixelRatio);
+  context.strokeStyle = "#1677ff";
+  context.strokeRect(
+    place.x + source.x * shrink + 0.5,
+    place.y + source.y * shrink + 0.5,
+    source.width * shrink - 1,
+    source.height * shrink - 1,
+  );
+}
+
+// 画面の縦横比（フルスクリーンにした、など）か設定が変わったら、取り込みの上限を合わせ直す
+async function fitCap(target, frame) {
+  const aspect = frame.displayWidth / frame.displayHeight;
+  const key = `${aspect.toFixed(3)}:${JSON.stringify(settings)}`;
+  if (key === capKey) return;
+  capKey = key;
+  const cap = captureCap(aspect, settings);
+  await target.applyConstraints({
+    width: { max: cap.width },
+    height: { max: cap.height },
+    frameRate: { max: 30 },
+  }).catch(() => {});
+}
+
+// 撮るときに待たなくていいように、届いたフレームのうち最新の1枚を持っておく
+async function readFrames(target) {
+  const reader = new MediaStreamTrackProcessor({ track: target }).readable.getReader();
+  try {
+    while (track === target) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      if (track !== target) {
+        value.close();
+        break;
+      }
+      const resized = latest?.displayWidth !== value.displayWidth || latest?.displayHeight !== value.displayHeight;
+      latest?.close();
+      latest = value;
+      drawPreview(value);
+      void fitCap(target, value);
+      if (resized) render();
+    }
+  } finally {
+    reader.cancel().catch(() => {});
   }
-  uaLine.textContent = status.userAgent || "";
-  if (status.domain) {
-    domainLine.textContent = `${status.domain} は「${status.profileLabel || status.profileId}」で起動中です`;
-  } else {
-    domainLine.textContent = "ドメインごとの起動方法は、そのドメインを開いたときに切り替わります。";
+}
+
+function releaseTrack() {
+  const current = track;
+  track = null;
+  capKey = null;
+  latest?.close();
+  latest = null;
+  current?.stop();
+}
+
+function stopShare() {
+  releaseTrack();
+  pipWindow?.close();
+  render();
+}
+
+async function startShare() {
+  showError("");
+  const controller = "CaptureController" in window ? new CaptureController() : undefined;
+  // フルスクリーンにする画面は、たいていこのパネルと同じモニターにある
+  const cap = captureCap(screen.width / screen.height, settings);
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getDisplayMedia({
+      video: {
+        displaySurface: "browser",
+        width: { max: cap.width },
+        height: { max: cap.height },
+        frameRate: { max: 30 },
+      },
+      audio: false,
+      controller,
+      preferCurrentTab: false,
+      selfBrowserSurface: "exclude",
+      surfaceSwitching: "include",
+    });
+  } catch (error) {
+    if (error.name !== "NotAllowedError") showError(`タブを取り込めませんでした: ${error.message}`);
+    return;
   }
-  if (status.url && document.activeElement !== urlInput) urlInput.value = status.url;
-  if (status.chrome?.path) {
-    chromeLine.textContent = "このPCの Google Chrome を、普段のウィンドウとは別のユーザーデータで起動します。";
-  } else {
-    chromeLine.textContent = "このPCでは Google Chrome が見つかりません。インストールするか、実行ファイルのパスを指定してください。";
+  // 選んだら動画のタブへ移る。フルスクリーンにするのはそちらのタブなので
+  try {
+    controller?.setFocusBehavior("focus-captured-surface");
+  } catch {
+    // タブ以外を選んだときは切り替えられない
   }
-  if (status.lastError && !busy) showError(status.lastError);
-  captureButton.disabled = busy || !status.browserOpen || status.capturing;
+  releaseTrack();
+  const next = stream.getVideoTracks()[0];
+  next.contentHint = "detail";
+  next.addEventListener("ended", () => {
+    if (track === next) stopShare();
+  });
+  track = next;
+  render();
+  void readFrames(next);
+}
+
+function sampleFrame(frame) {
+  const width = SAMPLE_WIDTH;
+  const height = Math.max(2, Math.round(SAMPLE_WIDTH * frame.displayHeight / frame.displayWidth));
+  const canvas = new OffscreenCanvas(width, height);
+  const context = canvas.getContext("2d", { willReadFrequently: true });
+  context.drawImage(frame, 0, 0, width, height);
+  return context.getImageData(0, 0, width, height);
+}
+
+async function encodeFrame(frame) {
+  const output = outputSize(settings);
+  const { source, target, scale } = placeVideo({ width: frame.displayWidth, height: frame.displayHeight }, settings);
+  const canvas = new OffscreenCanvas(output.width, output.height);
+  const context = canvas.getContext("2d");
+  context.fillStyle = "#000";
+  context.fillRect(0, 0, output.width, output.height);
+  context.imageSmoothingQuality = "high";
+  context.drawImage(
+    frame,
+    source.x, source.y, source.width, source.height,
+    target.x, target.y, target.width, target.height,
+  );
+  const warnings = [];
+  const edge = edgeWarning(sampleFrame(frame));
+  if (edge) warnings.push(edge);
+  if (scale > 1.01) {
+    warnings.push(`動画の範囲が ${Math.round(source.width)}×${Math.round(source.height)} しかないので、引き伸ばして保存しました。`);
+  }
+  const blob = await canvas.convertToBlob({ type: "image/jpeg", quality: JPEG_QUALITY / 100 });
+  return { blob, warnings };
+}
+
+async function capture() {
+  if (!latest || capturing) return;
+  capturing = true;
+  showError("");
+  render();
+  const frame = latest.clone();
+  try {
+    const { blob, warnings } = await encodeFrame(frame);
+    const shot = await api("/api/captures", {
+      method: "POST",
+      headers: { "Content-Type": "image/jpeg" },
+      body: blob,
+    });
+    showWarnings(warnings);
+    await refreshCaptures();
+    shotMeta.textContent = `${shot.file} · ${shot.width}×${shot.height} · ${Math.ceil(shot.bytes / 1024)}KB`;
+  } catch (error) {
+    showError(error.message);
+  } finally {
+    frame.close();
+    capturing = false;
+    render();
+  }
+}
+
+// 動画をフルスクリーンにしている間も押せるように、撮影ボタンだけを最前面のウィンドウに置く
+async function openPip() {
+  if (pipWindow) {
+    pipWindow.focus();
+    return;
+  }
+  const opened = await documentPictureInPicture.requestWindow({ width: 260, height: 110 });
+  const link = opened.document.createElement("link");
+  link.rel = "stylesheet";
+  link.href = new URL("/styles.css", location.href).href;
+  opened.document.head.append(link);
+  opened.document.body.className = "pip";
+  const button = opened.document.createElement("button");
+  button.type = "button";
+  button.id = "capture";
+  button.className = "btn btn-primary";
+  button.addEventListener("click", () => void capture());
+  opened.document.body.append(button);
+  opened.document.addEventListener("keydown", onShortcut);
+  opened.addEventListener("pagehide", () => {
+    if (pipWindow === opened) pipWindow = null;
+  });
+  pipWindow = opened;
+  render();
 }
 
 // 一覧は定期的に読み直すので、選んだカットは新しく撮るまで保つ
@@ -232,11 +342,11 @@ function renderCaptures(files) {
     shotMeta.textContent = "";
     return;
   }
-  const latest = files[0];
+  const latestFile = files[0];
   const selected = files.find((file) => file.name === selectedName);
-  if (latest.name !== latestName || !selected) showShot(latest);
+  if (latestFile.name !== latestName || !selected) showShot(latestFile);
   else showShot(selected);
-  latestName = latest.name;
+  latestName = latestFile.name;
   for (const file of files) {
     const item = document.createElement("li");
     const button = document.createElement("button");
@@ -251,139 +361,117 @@ function renderCaptures(files) {
   }
 }
 
-async function saveConfig() {
-  busy = true;
-  showError("");
+async function refreshCaptures() {
   try {
-    const payload = await api("/api/config", {
-      method: "PUT",
-      body: JSON.stringify({ config }),
-    });
-    config = payload.config;
-    profiles = payload.profiles;
-    renderConfig();
-  } catch (error) {
-    showError(error.message);
-  } finally {
-    busy = false;
-    await refresh();
-  }
-}
-
-async function refresh() {
-  try {
-    const [status, shots] = await Promise.all([
-      api("/api/status"),
-      api("/api/captures"),
-    ]);
-    renderStatus(status);
+    const shots = await api("/api/captures");
     renderCaptures(shots.files);
+    capturesDir.textContent = `保存先: ${shots.directory}`;
   } catch (error) {
-    if (!busy) showError(error.message);
+    showError(error.message);
   }
 }
 
-async function loadConfig() {
-  const payload = await api("/api/config");
-  config = payload.config;
-  profiles = payload.profiles;
-  renderConfig();
+function onShortcut(event) {
+  if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
+    event.preventDefault();
+    void capture();
+  }
 }
 
-document.querySelector("#nav-form").addEventListener("submit", async (event) => {
+const ASPECT_PRESETS = {
+  "16:9": [16, 9],
+  "4:3": [4, 3],
+  "2.39:1": [2.39, 1],
+  "1.85:1": [1.85, 1],
+};
+
+function renderSettings() {
+  screenWidth.value = settings.screen.width;
+  screenHeight.value = settings.screen.height;
+  const { width, height } = settings.videoAspect;
+  const preset = Object.entries(ASPECT_PRESETS).find(([, [w, h]]) => w / h === width / height);
+  aspectPreset.value = preset ? preset[0] : "custom";
+  aspectWidth.value = width;
+  aspectHeight.value = height;
+  aspectWidth.disabled = aspectHeight.disabled = Boolean(preset);
+  renderOutputLine();
+  render();
+}
+
+// 入力中の値で、保存されるサイズを先に見せる
+function formSettings() {
+  return {
+    screen: { width: Number(screenWidth.value), height: Number(screenHeight.value) },
+    videoAspect: { width: Number(aspectWidth.value), height: Number(aspectHeight.value) },
+  };
+}
+
+function renderOutputLine() {
+  const draft = formSettings();
+  const valid = [draft.screen.width, draft.screen.height, draft.videoAspect.width, draft.videoAspect.height]
+    .every((value) => value > 0);
+  if (!valid) {
+    outputLine.textContent = "—";
+    return;
+  }
+  const output = outputSize(draft);
+  outputLine.textContent = `${output.width}×${output.height}`;
+}
+
+settingsForm.addEventListener("input", renderOutputLine);
+
+aspectPreset.addEventListener("change", () => {
+  const preset = ASPECT_PRESETS[aspectPreset.value];
+  aspectWidth.disabled = aspectHeight.disabled = Boolean(preset);
+  if (preset) [aspectWidth.value, aspectHeight.value] = preset;
+  renderOutputLine();
+});
+
+settingsForm.addEventListener("submit", async (event) => {
   event.preventDefault();
-  busy = true;
   showError("");
-  captureButton.disabled = true;
   try {
-    await api("/api/navigate", {
-      method: "POST",
-      body: JSON.stringify({ url: urlInput.value }),
+    settings = await api("/api/settings", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(formSettings()),
     });
+    settingsNote.textContent = "保存しました";
+    setTimeout(() => { settingsNote.textContent = ""; }, 2000);
+    renderSettings();
+    if (track && latest) void fitCap(track, latest);
   } catch (error) {
     showError(error.message);
-  } finally {
-    busy = false;
-    await refresh();
   }
 });
+
+shareButton.addEventListener("click", () => void startShare());
+stopButton.addEventListener("click", stopShare);
+captureButton.addEventListener("click", () => void capture());
+pipButton.addEventListener("click", () => {
+  openPip().catch((error) => showError(`撮影ボタンのウィンドウを開けませんでした: ${error.message}`));
+});
+document.addEventListener("keydown", onShortcut);
 
 document.querySelector("#sample").addEventListener("click", () => {
-  urlInput.value = `${location.origin}/sample.html`;
-  document.querySelector("#nav-form").requestSubmit();
-});
-
-captureButton.addEventListener("click", async () => {
-  busy = true;
-  showError("");
-  captureButton.disabled = true;
-  captureButton.textContent = "撮っています";
-  try {
-    const shot = await api("/api/capture", { method: "POST", body: "{}" });
-    shotMeta.textContent = `${shot.file} · ${shot.width}×${shot.height} · ${Math.ceil(shot.bytes / 1024)}KB`;
-  } catch (error) {
-    showError(error.message);
-  } finally {
-    captureButton.textContent = "この video を撮る";
-    busy = false;
-    await refresh();
-  }
-});
-
-document.querySelector("#engine-form").addEventListener("submit", async (event) => {
-  event.preventDefault();
-  const selected = document.querySelector('input[name="engine"]:checked');
-  config.engine = selected ? selected.value : "auto";
-  config.executablePath = document.querySelector("#executable-path").value.trim();
-  await saveConfig();
-});
-
-document.querySelector("#rule-form").addEventListener("submit", async (event) => {
-  event.preventDefault();
-  const host = document.querySelector("#rule-host").value.trim();
-  if (!host) return;
-  config.domainProfiles[host] = profileSelect.value;
-  document.querySelector("#rule-host").value = "";
-  await saveConfig();
-});
-
-defaultProfile.addEventListener("change", async () => {
-  config.defaultProfile = defaultProfile.value;
-  await saveConfig();
-});
-
-document.querySelector("#profile-form").addEventListener("submit", async (event) => {
-  event.preventDefault();
-  const args = document.querySelector("#profile-args").value
-    .split("\n")
-    .map((line) => line.trim())
-    .filter(Boolean);
-  config.customProfiles.push({
-    id: document.querySelector("#profile-id").value.trim(),
-    label: document.querySelector("#profile-label").value.trim(),
-    args,
-  });
-  document.querySelector("#profile-form").reset();
-  await saveConfig();
+  window.open("/sample.html", "_blank");
 });
 
 document.querySelector("#open-captures").addEventListener("click", async () => {
   try {
-    await api("/api/captures/open", { method: "POST", body: "{}" });
+    await api("/api/captures/open", { method: "POST" });
   } catch (error) {
     showError(error.message);
   }
 });
 
-document.addEventListener("keydown", (event) => {
-  if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
-    event.preventDefault();
-    captureButton.click();
-  }
-});
-
-await loadConfig();
-await refresh();
+try {
+  settings = await api("/api/settings");
+} catch (error) {
+  showError(error.message);
+}
+renderSettings();
+await refreshCaptures();
 setInterval(() => {
-  if (!busy) void refresh();
-}, 1500);
+  if (!capturing) void refreshCaptures();
+}, 3000);

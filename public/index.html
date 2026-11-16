@@ -8,125 +8,111 @@
   <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
-  <header class="top">
-    <div class="brand">
-      <span id="lamp" class="lamp" aria-hidden="true"></span>
-      <div>
-        <p class="eyebrow">1920×1080 · JPEG 90</p>
-        <h1>Treasure Finder</h1>
+  <header class="app-header">
+    <div class="app-header-inner">
+      <div class="brand">
+        <img src="/favicon.svg" alt="" width="24" height="24">
+        <span class="brand-name">Treasure Finder</span>
+        <span id="output-tag" class="tag">1920×1080 · JPEG 90</span>
       </div>
-    </div>
-    <div class="identity">
-      <p id="engine-line">ブラウザはまだ起動していません</p>
-      <p id="ua-line" class="dim"></p>
+      <div class="status">
+        <span id="lamp" class="status-dot" aria-hidden="true"></span>
+        <span id="share-line">まだタブを共有していません</span>
+        <span id="size-line" class="text-secondary"></span>
+      </div>
     </div>
   </header>
 
-  <section class="transport">
-    <form id="nav-form" class="url-row">
-      <label class="sr" for="url">開くURL</label>
-      <input id="url" name="url" type="text" inputmode="url" spellcheck="false" placeholder="https:// 動画のあるページ" autocomplete="off">
-      <button type="submit">開く</button>
-    </form>
-    <p id="domain-line" class="domain-line">ドメインごとの起動方法は、そのドメインを開いたときに切り替わります。</p>
-    <p id="banner" class="banner" hidden></p>
-  </section>
+  <main class="container">
+    <section class="card card-toolbar">
+      <div class="toolbar">
+        <div class="space">
+          <button type="button" id="share" class="btn btn-primary">撮るタブを選ぶ</button>
+          <button type="button" id="stop" class="btn" hidden>共有をやめる</button>
+          <button type="button" id="pip" class="btn" hidden>撮影ボタンを最前面のウィンドウに出す</button>
+        </div>
+        <button type="button" id="sample" class="btn btn-link">サンプルを開く</button>
+      </div>
+      <div class="alert alert-info">動画のタブを選んで、動画をフルスクリーンにしてから撮ってください。タブの表示がそのまま写ります。</div>
+      <div id="banner" class="alert alert-error" role="alert" hidden></div>
+      <div id="warning" class="alert alert-warning" role="status" hidden></div>
+    </section>
 
-  <main>
-    <div class="shots">
-      <section class="sheet live-sheet">
-        <div class="sheet-head">
-          <h2>プレビュー</h2>
-          <p id="live-meta" class="dim"></p>
+    <div class="grid">
+      <section class="card">
+        <div class="card-head">
+          <h2 class="card-title">プレビュー</h2>
+          <span id="live-meta" class="text-secondary"></span>
         </div>
-        <div id="live-stage" class="stage live-stage">
-          <p id="live-empty">ブラウザを開くと、撮影用 Chrome の画面がここに映ります。</p>
-          <img id="live" alt="撮影用 Chrome の画面" hidden>
-        </div>
-        <p id="live-note" class="live-note" hidden></p>
-        <div class="stage-actions">
-          <button type="button" id="capture" class="capture">この video を撮る</button>
+        <div class="card-body">
+          <div id="live-stage" class="stage">
+            <p id="live-empty" class="empty">タブを共有すると、ここに映ります。</p>
+            <canvas id="live" hidden></canvas>
+          </div>
+          <div class="actions">
+            <span class="text-secondary">Ctrl+Enter でも撮れます</span>
+            <button type="button" id="capture" class="btn btn-primary capture" disabled>このフレームを撮る</button>
+          </div>
         </div>
       </section>
 
-      <section class="sheet preview-sheet">
-        <div class="sheet-head">
-          <h2>最新のカット</h2>
-          <p id="shot-meta" class="dim"></p>
+      <section class="card">
+        <div class="card-head">
+          <h2 class="card-title">最新のカット</h2>
+          <span id="shot-meta" class="text-secondary"></span>
         </div>
-        <div id="stage" class="stage">
-          <p id="stage-empty">まだありません。動画を開いて、赤いボタンを押してください。</p>
-          <img id="preview" alt="" hidden>
+        <div class="card-body">
+          <div id="stage" class="stage">
+            <p id="stage-empty" class="empty">まだありません。タブを共有して「このフレームを撮る」を押してください。</p>
+            <img id="preview" alt="" hidden>
+          </div>
+          <div class="actions">
+            <span id="captures-dir" class="text-secondary path"></span>
+            <button type="button" id="open-captures" class="btn">保存フォルダを開く</button>
+          </div>
+          <ul id="filmstrip" class="filmstrip"></ul>
         </div>
-        <div class="stage-actions">
-          <button type="button" id="open-captures">保存フォルダを開く</button>
-        </div>
-        <ul id="filmstrip" class="filmstrip"></ul>
       </section>
     </div>
 
-    <section class="settings">
-      <h2 class="settings-title">詳細設定</h2>
-      <div class="settings-grid">
-        <section class="sheet">
-          <h2>ドメイン別の起動</h2>
-          <p class="lead">動画が真っ黒に写るサイトだけ、ハードウェアアクセラレーションを切った起動にします。Cookie とログイン状態は、起動方法を替えても同じユーザーデータに残ります。</p>
-          <form id="rule-form" class="rule-row">
-            <label class="sr" for="rule-host">ドメイン</label>
-            <input id="rule-host" type="text" spellcheck="false" placeholder="example.com">
-            <label class="sr" for="rule-profile">起動方法</label>
-            <select id="rule-profile"></select>
-            <button type="submit">追加</button>
-          </form>
-          <ul id="rules" class="rules"></ul>
-          <label class="field">
-            <span>未指定のドメイン</span>
-            <select id="default-profile"></select>
-          </label>
-
-          <details class="advanced">
-            <summary>起動方法ごとの起動引数</summary>
-            <ul id="profile-catalog" class="catalog"></ul>
-            <h3>起動方法を追加する</h3>
-            <form id="profile-form" class="stack">
-              <label class="field"><span>ID</span><input id="profile-id" type="text" spellcheck="false" placeholder="no-overlay"></label>
-              <label class="field"><span>表示名</span><input id="profile-label" type="text" placeholder="オーバーレイ回避"></label>
-              <label class="field"><span>起動引数（1行に1つ）</span><textarea id="profile-args" rows="4" spellcheck="false" placeholder="--disable-gpu"></textarea></label>
-              <button type="submit">プロファイルを追加</button>
-            </form>
-          </details>
-        </section>
-
-        <section class="sheet">
-          <h2>ファイル名</h2>
-          <p class="lead">いま保存される名前は、このPCのローカル時刻です。ドメインごとに別の抜き出し方を足せるように、<code>filenameRules</code> だけ差し込める形にしてあります。</p>
-          <pre id="filename-preview"></pre>
-          <p class="dim">設定ファイルは data/config.json です。撮った JPEG は data/captures に入ります。</p>
-        </section>
-
-        <section class="sheet">
-          <h2>レンダラ</h2>
-          <p class="lead">撮影用の Chrome は、普段開いているウィンドウとは別のプロセスで起動します。ログイン状態はこのアプリ専用のユーザーデータに残り、普段の Chrome とは混ざりません。ハードウェアアクセラレーションはプロセスの起動引数で決まるので、ドメインごとに切り替えるときは、このアプリの Chrome だけを同じユーザーデータで開き直します。</p>
-          <form id="engine-form" class="stack">
-            <label class="choice"><input type="radio" name="engine" value="auto"> 自動（入っている Google Chrome）</label>
-            <label class="choice"><input type="radio" name="engine" value="chrome"> Google Chrome</label>
-            <label class="choice"><input type="radio" name="engine" value="custom"> 実行ファイルを指定</label>
-            <label class="field">
-              <span>実行ファイル</span>
-              <input id="executable-path" type="text" spellcheck="false" placeholder="chrome の実行ファイル">
-            </label>
-            <div class="cluster">
-              <button type="submit">レンダラ設定を保存</button>
-            </div>
-            <p id="chrome-line" class="dim"></p>
-          </form>
-        </section>
+    <section class="card">
+      <div class="card-head">
+        <h2 class="card-title">保存の設定</h2>
+        <span id="settings-note" class="text-secondary"></span>
       </div>
+      <form id="settings-form" class="card-body form">
+        <div class="form-item">
+          <label for="screen-width">基準の画面サイズ</label>
+          <div class="input-group">
+            <input id="screen-width" class="input" type="number" min="16" max="7680" step="1" required aria-label="幅">
+            <span class="text-secondary">×</span>
+            <input id="screen-height" class="input" type="number" min="16" max="7680" step="1" required aria-label="高さ">
+          </div>
+        </div>
+        <div class="form-item">
+          <label for="aspect-preset">動画の縦横比</label>
+          <div class="input-group">
+            <select id="aspect-preset" class="input">
+              <option value="16:9">16:9</option>
+              <option value="4:3">4:3</option>
+              <option value="2.39:1">2.39:1（シネマスコープ）</option>
+              <option value="1.85:1">1.85:1（ビスタ）</option>
+              <option value="custom">数値で指定</option>
+            </select>
+            <input id="aspect-width" class="input input-small" type="number" min="0.01" step="any" required aria-label="横">
+            <span class="text-secondary">:</span>
+            <input id="aspect-height" class="input input-small" type="number" min="0.01" step="any" required aria-label="縦">
+          </div>
+        </div>
+        <div class="form-item">
+          <span>保存サイズ</span>
+          <strong id="output-line">1920×1080</strong>
+        </div>
+        <p class="form-help text-secondary">基準の画面で動画をフルスクリーンにしたときの大きさで保存します。取り込んだ画面の中央から、動画の縦横比の範囲を切り出します。</p>
+        <div><button type="submit" class="btn btn-primary">設定を保存</button></div>
+      </form>
     </section>
   </main>
-  <footer class="foot">
-    <button type="button" id="sample">サンプルを開く</button>
-  </footer>
   <script src="/app.js" type="module"></script>
 </body>
 </html>
